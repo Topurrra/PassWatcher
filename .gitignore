@@ -4,3 +4,6 @@
 
 # Superpowers local brainstorming and SDD state
 .superpowers/
+
+# Isolated implementation worktrees
+.worktrees/
