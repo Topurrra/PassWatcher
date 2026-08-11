@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import passwatcher_server.database as database_module
 from passwatcher_server.database import DatabaseError, NotFoundError, ValidationError, Vault
 
 
@@ -227,3 +228,109 @@ def test_database_is_owner_read_write_only(vault: Vault) -> None:
     vault.initialize()
 
     assert stat.S_IMODE(vault.path.stat().st_mode) == 0o600
+
+
+def test_initialize_requests_private_vault_directory_permissions(
+    vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chmod_calls: list[tuple[Path, int]] = []
+    monkeypatch.setattr(
+        database_module,
+        "_chmod",
+        lambda path, mode: chmod_calls.append((path, mode)),
+        raising=False,
+    )
+
+    vault.initialize()
+
+    assert (vault.path.parent, 0o700) in chmod_calls
+
+
+def test_permission_helper_targets_existing_database_sidecars(
+    vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_files = [
+        vault.path,
+        vault.path.with_name(f"{vault.path.name}-wal"),
+        vault.path.with_name(f"{vault.path.name}-shm"),
+    ]
+    for path in database_files:
+        path.touch()
+    chmod_calls: list[tuple[Path, int]] = []
+    monkeypatch.setattr(
+        database_module,
+        "_chmod",
+        lambda path, mode: chmod_calls.append((path, mode)),
+        raising=False,
+    )
+
+    vault._restrict_permissions()
+
+    assert {(path, mode) for path, mode in chmod_calls if mode == 0o600} == {
+        (path, 0o600) for path in database_files
+    }
+
+
+def test_migration_backup_requests_private_directory_and_file_permissions(
+    vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault.initialize()
+    with sqlite3.connect(vault.path) as connection:
+        connection.execute("UPDATE metadata SET value = '0' WHERE key = 'schema_version'")
+    chmod_calls: list[tuple[Path, int]] = []
+    monkeypatch.setattr(
+        database_module,
+        "_chmod",
+        lambda path, mode: chmod_calls.append((path, mode)),
+        raising=False,
+    )
+
+    with pytest.raises(DatabaseError):
+        vault.initialize()
+
+    backups = list(vault.backup_dir.glob("passwatcher-*-v0.db"))
+    assert len(backups) == 1
+    assert (vault.backup_dir, 0o700) in chmod_calls
+    assert (backups[0], 0o600) in chmod_calls
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission assertion")
+def test_vault_directory_is_owner_only(vault: Vault) -> None:
+    os.chmod(vault.path.parent, 0o755)
+
+    vault.initialize()
+
+    assert stat.S_IMODE(vault.path.parent.stat().st_mode) == 0o700
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission assertion")
+def test_migration_backup_directory_is_owner_only(vault: Vault) -> None:
+    vault.initialize()
+    with sqlite3.connect(vault.path) as connection:
+        connection.execute("UPDATE metadata SET value = '0' WHERE key = 'schema_version'")
+
+    with pytest.raises(DatabaseError):
+        vault.initialize()
+
+    assert stat.S_IMODE(vault.backup_dir.stat().st_mode) == 0o700
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission assertion")
+def test_live_database_files_are_owner_read_write_only(vault: Vault) -> None:
+    vault.initialize()
+    held_connection = vault._connect()
+    try:
+        vault.create(
+            service="github.com", label="", username="nika", password="secret", notes=""
+        )
+        database_files = [
+            vault.path,
+            vault.path.with_name(f"{vault.path.name}-wal"),
+            vault.path.with_name(f"{vault.path.name}-shm"),
+        ]
+        existing_files = [path for path in database_files if path.exists()]
+
+        assert {path.name for path in existing_files} == {path.name for path in database_files}
+        assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in existing_files)
+    finally:
+        held_connection.close()

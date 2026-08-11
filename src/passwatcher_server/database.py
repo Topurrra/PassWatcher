@@ -13,6 +13,14 @@ from .models import Credential
 
 SCHEMA_VERSION = 1
 MAX_FIELD_BYTES = 4096
+PRIVATE_DIRECTORY_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+
+
+def _chmod(path: Path, mode: int) -> None:
+    """Apply POSIX permission modes without impairing Windows storage."""
+    if os.name != "nt":
+        os.chmod(path, mode)
 
 
 class ValidationError(ValueError):
@@ -43,6 +51,7 @@ class Vault:
         """Create version-one storage, or verify the existing schema."""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._restrict_permissions()
             connection = self._connect()
             try:
                 with connection:
@@ -62,8 +71,7 @@ class Vault:
                     else:
                         self._check_schema_version(connection, version_row["value"])
             finally:
-                connection.close()
-            self._restrict_permissions()
+                self._secure_and_close(connection)
         except DatabaseError:
             raise
         except (OSError, sqlite3.Error) as error:
@@ -99,7 +107,7 @@ class Vault:
         except sqlite3.Error as error:
             raise DatabaseError("The vault database could not store the credential") from error
         finally:
-            connection.close()
+            self._secure_and_close(connection)
         return self._credential_from_row(row)
 
     def search(self, query: str) -> list[Credential]:
@@ -120,7 +128,7 @@ class Vault:
         except sqlite3.Error as error:
             raise DatabaseError("The vault database could not be searched") from error
         finally:
-            connection.close()
+            self._secure_and_close(connection)
         return [self._credential_from_row(row) for row in rows]
 
     def list_all(self) -> list[Credential]:
@@ -136,7 +144,7 @@ class Vault:
         except sqlite3.Error as error:
             raise DatabaseError("The vault database could not be read") from error
         finally:
-            connection.close()
+            self._secure_and_close(connection)
         return [self._credential_from_row(row) for row in rows]
 
     def update(
@@ -172,7 +180,7 @@ class Vault:
         except sqlite3.Error as error:
             raise DatabaseError("The vault database could not update the credential") from error
         finally:
-            connection.close()
+            self._secure_and_close(connection)
         return self._credential_from_row(row)
 
     def delete(self, credential_id: int) -> None:
@@ -188,7 +196,7 @@ class Vault:
         except sqlite3.Error as error:
             raise DatabaseError("The vault database could not delete the credential") from error
         finally:
-            connection.close()
+            self._secure_and_close(connection)
 
     def health(self) -> dict[str, Any]:
         """Return non-secret vault diagnostics for setup and doctor commands."""
@@ -205,7 +213,7 @@ class Vault:
         except sqlite3.Error as error:
             raise DatabaseError("The vault database health check failed") from error
         finally:
-            connection.close()
+            self._secure_and_close(connection)
         return {
             "schema_version": int(version),
             "record_count": record_count,
@@ -221,6 +229,7 @@ class Vault:
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA busy_timeout=5000")
+            self._restrict_permissions()
             return connection
         except (OSError, sqlite3.Error) as error:
             raise DatabaseError("The vault database could not be opened") from error
@@ -256,12 +265,13 @@ class Vault:
         target = self.backup_dir / f"passwatcher-{timestamp}-v{old_version}.db"
         try:
             self.backup_dir.mkdir(parents=True, exist_ok=True)
+            _chmod(self.backup_dir, PRIVATE_DIRECTORY_MODE)
             destination = sqlite3.connect(target)
             try:
                 source.backup(destination)
             finally:
                 destination.close()
-            os.chmod(target, 0o600)
+            _chmod(target, PRIVATE_FILE_MODE)
         except (OSError, sqlite3.Error) as error:
             raise DatabaseError("The vault backup could not be created") from error
         return target
@@ -325,14 +335,49 @@ class Vault:
 
     def _restrict_permissions(self) -> None:
         try:
-            os.chmod(self.path, 0o600)
+            _chmod(self.path.parent, PRIVATE_DIRECTORY_MODE)
+            if self.backup_dir.exists():
+                _chmod(self.backup_dir, PRIVATE_DIRECTORY_MODE)
+            sensitive_files = [
+                self.path,
+                self.path.with_name(f"{self.path.name}-wal"),
+                self.path.with_name(f"{self.path.name}-shm"),
+            ]
+            if self.backup_dir.exists():
+                sensitive_files.extend(self.backup_dir.glob("passwatcher-*.db"))
+            for path in sensitive_files:
+                if path.exists():
+                    _chmod(path, PRIVATE_FILE_MODE)
         except OSError as error:
-            raise DatabaseError("The vault database permissions could not be secured") from error
+            raise DatabaseError("The vault storage permissions could not be secured") from error
+
+    def _secure_and_close(self, connection: sqlite3.Connection) -> None:
+        try:
+            self._restrict_permissions()
+        finally:
+            connection.close()
 
     def _permissions_ok(self) -> bool:
         if os.name == "nt":
             return True
         try:
-            return (self.path.stat().st_mode & 0o777) == 0o600
+            directories = [self.path.parent]
+            if self.backup_dir.exists():
+                directories.append(self.backup_dir)
+            files = [
+                self.path,
+                self.path.with_name(f"{self.path.name}-wal"),
+                self.path.with_name(f"{self.path.name}-shm"),
+            ]
+            if self.backup_dir.exists():
+                files.extend(self.backup_dir.glob("passwatcher-*.db"))
+            return all(
+                (path.stat().st_mode & 0o777) == PRIVATE_DIRECTORY_MODE
+                for path in directories
+            ) and all(
+                (path.stat().st_mode & 0o777) == PRIVATE_FILE_MODE
+                for path in files
+                if path.exists()
+            )
         except OSError:
             return False
