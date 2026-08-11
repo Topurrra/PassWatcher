@@ -7,3 +7,9 @@
 
 # Isolated implementation worktrees
 .worktrees/
+
+# Python test and bytecode artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+pytest-cache-files-*/
