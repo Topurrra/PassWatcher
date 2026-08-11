@@ -21,3 +21,29 @@ def test_config_rejects_invalid_port(tmp_path):
 
     with pytest.raises(ConfigError, match="port"):
         load_config(path)
+
+
+@pytest.mark.parametrize("port", ["22.5", "true"])
+def test_config_rejects_non_integer_port(tmp_path, port):
+    path = tmp_path / "config.toml"
+    path.write_text(f'host="vault"\nuser="nika"\nport={port!s}\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="port"):
+        load_config(path)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    ['host=1\nuser="nika"\n', 'host="vault"\nuser=1\n'],
+)
+def test_config_rejects_non_string_required_fields(tmp_path, contents):
+    path = tmp_path / "config.toml"
+    path.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="host and user"):
+        load_config(path)
+
+
+def test_config_rejects_non_path_identity_file():
+    with pytest.raises(ConfigError, match="identity_file"):
+        ClientConfig("vault", "nika", identity_file="C:/keys/vault")

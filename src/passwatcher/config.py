@@ -23,10 +23,16 @@ class ClientConfig:
     identity_file: Path | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.host, str) or not isinstance(self.user, str):
+            raise ConfigError("host and user must be strings")
         if not self.host.strip() or not self.user.strip():
             raise ConfigError("host and user are required")
+        if type(self.port) is not int:
+            raise ConfigError("port must be an integer")
         if not 1 <= self.port <= 65535:
             raise ConfigError("port must be between 1 and 65535")
+        if self.identity_file is not None and not isinstance(self.identity_file, Path):
+            raise ConfigError("identity_file must be a Path or None")
 
 
 def load_config(path: Path) -> ClientConfig:

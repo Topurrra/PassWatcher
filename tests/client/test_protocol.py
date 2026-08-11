@@ -1,4 +1,5 @@
 import json
+import math
 
 import pytest
 
@@ -13,6 +14,12 @@ def test_request_is_versioned_json_line():
         "operation": "search",
         "payload": {"query": "github"},
     }
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_request_rejects_non_finite_payload_values(value):
+    with pytest.raises(ValueError):
+        make_request("search", {"score": value})
 
 
 def test_response_rejects_wrong_version():

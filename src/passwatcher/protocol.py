@@ -26,7 +26,10 @@ def make_request(operation: str, payload: dict[str, object]) -> bytes:
         "operation": operation,
         "payload": payload,
     }
-    return json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+    return (
+        json.dumps(request, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        + b"\n"
+    )
 
 
 def parse_response(raw: bytes) -> dict[str, object]:
