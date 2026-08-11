@@ -83,6 +83,20 @@ def test_one_match_shows_and_copies_password(cli, service, clipboard):
     assert clipboard.values == ["only-secret"]
 
 
+def test_plain_one_match_uses_tab_separated_format(cli, service):
+    service.matches = [record(password="only-secret")]
+
+    result = cli.invoke(app, ["--plain", "github"])
+
+    assert result.exit_code == 0
+    assert result.stdout.splitlines() == [
+        "Credential",
+        "ID\tService\tLabel\tUsername\tPassword",
+        "7\tgithub.com\twork\tnika\tonly-secret",
+    ]
+    assert "\x1b[" not in result.stdout
+
+
 def test_many_matches_show_all_and_copy_nothing(cli, service, clipboard):
     service.matches = [
         record(label="personal", password="one"),

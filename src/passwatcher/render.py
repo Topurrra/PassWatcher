@@ -41,18 +41,7 @@ class Renderer:
 
     def one_match(self, record: CredentialRecord) -> None:
         if self.plain:
-            self._print_plain(
-                "\n".join(
-                    (
-                        "Credential",
-                        f"ID: {record.id}",
-                        f"Service: {record.service}",
-                        f"Label: {record.label}",
-                        f"Username: {record.username}",
-                        f"Password: {record.password}",
-                    )
-                )
-            )
+            self._print_rows("Credential", [record], secrets=True)
             return
 
         details = Group(
