@@ -1,0 +1,6 @@
+
+# voli project memory (local knowledge, not for the repo)
+.voli/
+
+# Superpowers local brainstorming and SDD state
+.superpowers/
