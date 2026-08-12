@@ -138,14 +138,22 @@ def test_nsis_compiles_from_the_repository_root(tmp_path) -> None:
     (payload / "pw.exe").write_bytes(b"passwatcher compiler fixture")
 
     result = subprocess.run(
-        [makensis, "/DVERSION=0.0.0", "packaging/passwatcher.nsi"],
+        [makensis, "/V4", "/DVERSION=0.0.0", "packaging/passwatcher.nsi"],
         cwd=project,
         capture_output=True,
         text=True,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+    assert "warning 6000" not in result.stdout + result.stderr
+    assert 'File: "pw.exe"->"passwatcher.exe"' in result.stdout
     assert (project / "dist" / "Passwatcher-Setup-0.0.0.exe").is_file()
+
+
+def test_nsis_owns_the_passwatcher_command_alias_lifecycle() -> None:
+    text = Path("packaging/passwatcher.nsi").read_text(encoding="utf-8")
+    assert 'File /oname=passwatcher.exe "${BUILD_DIR}\\pw.exe"' in text
+    assert text.count('Delete "$INSTDIR\\passwatcher.exe"') == 2
 
 
 def test_smoke_script_requires_disposable_context_and_refuses_existing_config() -> None:
@@ -153,7 +161,7 @@ def test_smoke_script_requires_disposable_context_and_refuses_existing_config() 
     assert "PASSWATCHER_SMOKE_ISOLATED_USER" in text
     assert "Refusing to use an existing Passwatcher config directory" in text
     assert text.count("Invoke-CheckedProcess -FilePath $installerPath") >= 2
-    assert "pw --help" in text
+    assert 'Invoke-CheckedProcess -FilePath $resolvedPw -ArgumentList @("--help")' in text
     assert "uninstall.exe" in text
     assert "$installed" not in text
     assert "Test-Path -LiteralPath $uninstaller -PathType Leaf" in text
@@ -174,6 +182,19 @@ def test_smoke_script_requires_disposable_context_and_refuses_existing_config() 
     assert "windows-installer-cleanup.ps1" in text
 
 
+def test_smoke_verifies_exact_launchers_and_reports_bare_pw_collisions() -> None:
+    text = Path("tests/setup/windows-installer-smoke.ps1").read_text(encoding="utf-8")
+    assert '$passwatcherExecutable = Join-Path $installDirectory "passwatcher.exe"' in text
+    assert "Invoke-CheckedProcess -FilePath $pwExecutable" in text
+    assert "Invoke-CheckedProcess -FilePath $passwatcherExecutable" in text
+    assert "Get-Command passwatcher.exe -CommandType Application" in text
+    assert "Passwatcher command collision:" in text
+    assert "Use 'passwatcher' as the unambiguous command." in text
+    assert "$previousProcessPath = $env:Path" in text
+    assert "$env:Path = $previousProcessPath" in text
+    assert text.count("Select-Object -First 1 -ExpandProperty Source") == 2
+
+
 def test_smoke_has_guarded_override_and_unexpected_file_canaries() -> None:
     text = Path("tests/setup/windows-installer-safety-smoke.ps1").read_text(encoding="utf-8")
     assert 'if ($env:PASSWATCHER_SMOKE_ISOLATED_USER -ne "1")' in text
@@ -183,6 +204,9 @@ def test_smoke_has_guarded_override_and_unexpected_file_canaries() -> None:
     assert '@("/S", "_?=$uninstallerQuestionOverrideDirectory")' in text
     assert text.count("Assert-CanarySurvived") >= 3
     assert "$unexpectedInstallFile" in text
+    assert '$installedPasswatcher = Join-Path $installDirectory "passwatcher.exe"' in text
+    assert "-not (Test-Path -LiteralPath $installedPasswatcher)" in text
+    assert "Installer did not create passwatcher.exe" in text
     assert "Uninstall deleted the unexpected install-directory sentinel" in text
     assert "PathEntryAddedByInstall" in text
     assert "$preexistingPathValue" in text

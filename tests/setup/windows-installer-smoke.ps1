@@ -23,6 +23,8 @@ $appData = [Environment]::GetFolderPath([Environment+SpecialFolder]::Application
 $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 $configDirectory = Join-Path $appData "Passwatcher"
 $installDirectory = Join-Path $localAppData "Programs\Passwatcher"
+$pwExecutable = Join-Path $installDirectory "pw.exe"
+$passwatcherExecutable = Join-Path $installDirectory "passwatcher.exe"
 $uninstaller = Join-Path $installDirectory "uninstall.exe"
 $uninstallSubKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\Passwatcher"
 $installerProductSubKey = "Software\Passwatcher"
@@ -133,16 +135,57 @@ function Get-InstallPathEntryCount {
     return @($state.Value.Split(';') | Where-Object { $_ -ieq $installDirectory }).Count
 }
 
-function Assert-PwRunsFromUserPath {
-    $childScript = @"
-`$env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
-`$resolved = (Get-Command pw.exe -CommandType Application -ErrorAction Stop).Source
-if (`$resolved -ine '$($installDirectory.Replace("'", "''"))\pw.exe') { throw "pw resolved to unexpected path: `$resolved" }
-& pw --help
-if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
-"@
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
-    Invoke-CheckedProcess -FilePath powershell.exe -ArgumentList @("-NoProfile", "-NonInteractive", "-EncodedCommand", $encoded)
+function Assert-InstalledLaunchersAndFreshPath {
+    Invoke-CheckedProcess -FilePath $pwExecutable -ArgumentList @("--help")
+    Invoke-CheckedProcess -FilePath $passwatcherExecutable -ArgumentList @("--help")
+
+    $previousProcessPath = $env:Path
+    try {
+        $env:Path = (
+            [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+            [Environment]::GetEnvironmentVariable("Path", "User")
+        )
+        $resolvedPasswatcher = Get-Command passwatcher.exe -CommandType Application -ErrorAction Stop |
+            Select-Object -First 1 -ExpandProperty Source
+        if ($resolvedPasswatcher -ine $passwatcherExecutable) {
+            throw "passwatcher resolved to unexpected path: $resolvedPasswatcher"
+        }
+        Invoke-CheckedProcess -FilePath $resolvedPasswatcher -ArgumentList @("--help")
+
+        $resolvedPw = Get-Command pw.exe -CommandType Application -ErrorAction Stop |
+            Select-Object -First 1 -ExpandProperty Source
+        if ($resolvedPw -ieq $pwExecutable) {
+            Invoke-CheckedProcess -FilePath $resolvedPw -ArgumentList @("--help")
+        }
+        else {
+            Write-Warning "Passwatcher command collision: pw.exe resolves to '$resolvedPw', not '$pwExecutable'. Use 'passwatcher' as the unambiguous command."
+        }
+    }
+    finally {
+        $env:Path = $previousProcessPath
+    }
+}
+
+function Assert-UninstallMetadata {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($uninstallSubKey, $false)
+    try {
+        if ($null -eq $key) {
+            throw "Installer did not create uninstall metadata."
+        }
+        $expectedUninstall = '"' + $uninstaller + '"'
+        $expectedQuietUninstall = $expectedUninstall + " /S"
+        if ([string]$key.GetValue("UninstallString", "") -cne $expectedUninstall) {
+            throw "Installer wrote malformed UninstallString metadata."
+        }
+        if ([string]$key.GetValue("QuietUninstallString", "") -cne $expectedQuietUninstall) {
+            throw "Installer wrote malformed QuietUninstallString metadata."
+        }
+    }
+    finally {
+        if ($null -ne $key) {
+            $key.Dispose()
+        }
+    }
 }
 
 if (Test-RegistrySubKeyExists -SubKey $uninstallSubKey) {
@@ -156,13 +199,17 @@ $originalUserPath = Get-UserPathState
 
 try {
     Invoke-CheckedProcess -FilePath $installerPath -ArgumentList @("/S")
-    if (-not (Test-Path -LiteralPath (Join-Path $installDirectory "pw.exe") -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $pwExecutable -PathType Leaf)) {
         throw "The installer did not create pw.exe."
+    }
+    if (-not (Test-Path -LiteralPath $passwatcherExecutable -PathType Leaf)) {
+        throw "The installer did not create passwatcher.exe."
     }
     if ((Get-InstallPathEntryCount) -ne 1) {
         throw "The installer did not add exactly one user PATH entry."
     }
-    Assert-PwRunsFromUserPath
+    Assert-UninstallMetadata
+    Assert-InstalledLaunchersAndFreshPath
 
     New-Item -ItemType Directory -Path $configDirectory | Out-Null
     Set-Content -LiteralPath (Join-Path $configDirectory "config.toml") -Value "smoke_sentinel = `"$sentinel`"" -Encoding UTF8

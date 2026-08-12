@@ -84,11 +84,13 @@ Section "Passwatcher" SEC_PASSWATCHER
   ; Replace only Passwatcher-owned artifacts. Unexpected files keep the root
   ; directory non-empty and therefore survive both upgrades and uninstall.
   Delete "$INSTDIR\pw.exe"
+  Delete "$INSTDIR\passwatcher.exe"
   Delete "$INSTDIR\uninstall.exe"
   RMDir /r "$INSTDIR\_internal"
   RMDir "$INSTDIR"
   SetOutPath "$INSTDIR"
   File /r "${BUILD_DIR}\*.*"
+  File /oname=passwatcher.exe "${BUILD_DIR}\pw.exe"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME}"
@@ -96,8 +98,8 @@ Section "Passwatcher" SEC_PASSWATCHER
   WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "Passwatcher"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\pw.exe"
-  WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '$"$INSTDIR\uninstall.exe$"'
-  WriteRegStr HKCU "${UNINSTALL_KEY}" "QuietUninstallString" '$"$INSTDIR\uninstall.exe$" /S'
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair" 1
 
@@ -130,6 +132,7 @@ product_state_cleanup_done:
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
   SetOutPath "$TEMP"
   Delete "$INSTDIR\pw.exe"
+  Delete "$INSTDIR\passwatcher.exe"
   Delete "$INSTDIR\uninstall.exe"
   RMDir /r "$INSTDIR\_internal"
   RMDir "$INSTDIR"

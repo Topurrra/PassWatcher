@@ -13,6 +13,8 @@ pw --help
 pw setup
 ```
 
+If another program named `pw` appears earlier in the machine `PATH`, use `passwatcher` instead. The installer provides both commands, and `passwatcher` is the unambiguous fallback without modifying machine-wide tools or settings.
+
 `pw setup` asks for the Linux SSH host, SSH user, port (normally `22`), and an optional identity-file path. Confirm the displayed target. Passwatcher checks connectivity, safely installs or reuses the server component, verifies the vault, and only then writes `%APPDATA%\Passwatcher\config.toml`. That file contains connection settings, not passwords.
 
 Windows 10 or 11 must have the OpenSSH `ssh` and `scp` clients available. The Linux account needs Python 3.11 or newer and an already-running OpenSSH service.

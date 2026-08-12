@@ -24,6 +24,7 @@ $installerPath = $installerMatches[0].FullName
 
 $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 $installDirectory = Join-Path $localAppData "Programs\Passwatcher"
+$installedPasswatcher = Join-Path $installDirectory "passwatcher.exe"
 $uninstaller = Join-Path $installDirectory "uninstall.exe"
 $uninstallSubKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\Passwatcher"
 $installerProductSubKey = "Software\Passwatcher"
@@ -225,6 +226,7 @@ function Wait-ForOwnedArtifactsRemoval {
     for ($attempt = 0; $attempt -lt 100; $attempt++) {
         if (
             -not (Test-Path -LiteralPath (Join-Path $installDirectory "pw.exe")) -and
+            -not (Test-Path -LiteralPath $installedPasswatcher) -and
             -not (Test-Path -LiteralPath (Join-Path $installDirectory "_internal")) -and
             -not (Test-Path -LiteralPath $uninstaller)
         ) {
@@ -277,6 +279,9 @@ try {
     Assert-CanarySurvived -Canary $installerCanary
     if (-not (Test-Path -LiteralPath (Join-Path $installDirectory "pw.exe") -PathType Leaf)) {
         throw "Installer /D= override was not pinned to the canonical install directory."
+    }
+    if (-not (Test-Path -LiteralPath $installedPasswatcher -PathType Leaf)) {
+        throw "Installer did not create passwatcher.exe."
     }
     if ((Get-InstallPathEntryCount) -ne 1) {
         throw "Installer did not add exactly one owned user PATH entry."
