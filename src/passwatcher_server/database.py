@@ -8,11 +8,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .models import Credential
+from .models import Credential, CredentialDraft, ImportSummary
 
 
 SCHEMA_VERSION = 1
 MAX_FIELD_BYTES = 4096
+MAX_IMPORT_ROWS = 3000
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 
@@ -198,6 +199,109 @@ class Vault:
         finally:
             self._secure_and_close(connection)
 
+    def import_many(
+        self, records: list[CredentialDraft], *, duplicates: str
+    ) -> ImportSummary:
+        """Validate and apply one credential batch in a single transaction."""
+        if not 1 <= len(records) <= MAX_IMPORT_ROWS:
+            raise ValidationError(
+                "invalid_import_count",
+                f"Import must contain between 1 and {MAX_IMPORT_ROWS} records",
+            )
+        if duplicates not in {"skip", "update", "error"}:
+            raise ValidationError(
+                "invalid_duplicate_policy",
+                "Duplicate policy must be skip, update, or error",
+            )
+
+        normalized = [
+            self._validate_fields(
+                record.service,
+                record.label,
+                record.username,
+                record.password,
+                record.notes,
+            )
+            for record in records
+        ]
+        unique_fields: list[tuple[str, str, str, str, str]] = []
+        input_by_identity: dict[tuple[str, str, str], tuple[str, str, str, str, str]] = {}
+        skipped = 0
+        for fields in normalized:
+            identity = self._identity(fields[0], fields[1], fields[2])
+            previous = input_by_identity.get(identity)
+            if previous is None:
+                input_by_identity[identity] = fields
+                unique_fields.append(fields)
+                continue
+            if previous != fields:
+                raise ValidationError(
+                    "duplicate_conflict",
+                    "The import contains a duplicate credential identity",
+                )
+            skipped += 1
+
+        existing_by_identity: dict[tuple[str, str, str], list[Credential]] = {}
+        for record in self.list_all():
+            identity = self._identity(record.service, record.label, record.username)
+            existing_by_identity.setdefault(identity, []).append(record)
+
+        inserts: list[tuple[str, str, str, str, str]] = []
+        updates: list[tuple[int, tuple[str, str, str, str, str]]] = []
+        for fields in unique_fields:
+            identity = self._identity(fields[0], fields[1], fields[2])
+            matches = existing_by_identity.get(identity, [])
+            if not matches:
+                inserts.append(fields)
+                continue
+            if duplicates == "skip":
+                skipped += 1
+                continue
+            if duplicates == "error" or len(matches) != 1:
+                raise ValidationError(
+                    "duplicate_conflict",
+                    "The import contains a duplicate credential identity",
+                )
+            updates.append((matches[0].id, fields))
+
+        if not inserts and not updates:
+            return ImportSummary(
+                total=len(records),
+                inserted=0,
+                updated=0,
+                skipped=skipped,
+            )
+
+        self.backup()
+        now = self._timestamp()
+        connection = self._connect()
+        try:
+            with connection:
+                for fields in inserts:
+                    connection.execute(
+                        "INSERT INTO credentials("
+                        "service, label, username, password, notes, created_at, updated_at"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (*fields, now, now),
+                    )
+                for credential_id, fields in updates:
+                    connection.execute(
+                        "UPDATE credentials SET password = ?, notes = ?, updated_at = ? "
+                        "WHERE id = ?",
+                        (fields[3], fields[4], now, credential_id),
+                    )
+        except sqlite3.Error as error:
+            raise DatabaseError("The vault database could not import credentials") from error
+        finally:
+            self._secure_and_close(connection)
+
+        return ImportSummary(
+            total=len(records),
+            inserted=len(inserts),
+            updated=len(updates),
+            skipped=skipped,
+        )
+
     def health(self) -> dict[str, Any]:
         """Return non-secret vault diagnostics for setup and doctor commands."""
         self.initialize()
@@ -320,6 +424,10 @@ class Vault:
         if isinstance(credential_id, bool) or not isinstance(credential_id, int) or credential_id < 1:
             raise ValidationError("invalid_id", "Credential id must be a positive integer")
         return credential_id
+
+    @staticmethod
+    def _identity(service: str, label: str, username: str) -> tuple[str, str, str]:
+        return service.strip().casefold(), label.strip().casefold(), username.strip().casefold()
 
     @classmethod
     def _validate_fields(

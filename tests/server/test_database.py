@@ -6,12 +6,205 @@ from pathlib import Path
 import pytest
 
 import passwatcher_server.database as database_module
+import passwatcher_server.models as models
 from passwatcher_server.database import DatabaseError, NotFoundError, ValidationError, Vault
 
 
 @pytest.fixture
 def vault(tmp_path: Path) -> Vault:
     return Vault(tmp_path / "passwatcher.db", tmp_path / "backups")
+
+
+def draft(**overrides: str):
+    values = {
+        "service": "github.com",
+        "label": "work",
+        "username": "nika",
+        "password": "secret",
+        "notes": "",
+    }
+    values.update(overrides)
+    return models.CredentialDraft(**values)
+
+
+def test_import_many_inserts_all_records_in_one_result(vault: Vault) -> None:
+    """Catches a batch import dropping a valid row or reporting wrong counts."""
+    summary = vault.import_many(
+        [draft(), draft(service="gitlab.com", password="other")],
+        duplicates="skip",
+    )
+
+    assert summary.total == 2
+    assert summary.inserted == 2
+    assert summary.updated == 0
+    assert summary.skipped == 0
+    assert len(vault.list_all()) == 2
+
+
+def test_import_many_updates_matching_identity(vault: Vault) -> None:
+    """Catches update imports replacing IDs, creation times, or identity fields."""
+    original = vault.create(
+        service="GitHub.com", label="Work", username="Nika", password="old", notes="old"
+    )
+
+    summary = vault.import_many(
+        [draft(password="new", notes="new")],
+        duplicates="update",
+    )
+
+    updated = vault.list_all()[0]
+    assert summary.updated == 1
+    assert updated.id == original.id
+    assert updated.created_at == original.created_at
+    assert (updated.service, updated.label, updated.username) == (
+        "GitHub.com",
+        "Work",
+        "Nika",
+    )
+    assert (updated.password, updated.notes) == ("new", "new")
+
+
+def test_import_many_error_policy_changes_nothing(vault: Vault) -> None:
+    """Catches duplicate-error imports mutating a record before rejecting it."""
+    vault.create(
+        service="github.com", label="work", username="nika", password="old", notes=""
+    )
+
+    with pytest.raises(ValidationError) as raised:
+        vault.import_many([draft(password="new")], duplicates="error")
+
+    assert raised.value.code == "duplicate_conflict"
+    assert vault.list_all()[0].password == "old"
+
+
+def test_import_many_backs_up_before_mutation(vault: Vault) -> None:
+    """Catches bulk writes running without a recoverable pre-import snapshot."""
+    vault.create(
+        service="existing.test", label="", username="old", password="old", notes=""
+    )
+
+    vault.import_many([draft()], duplicates="skip")
+
+    backups = list(vault.backup_dir.glob("passwatcher-*-v1.db"))
+    assert len(backups) == 1
+    with sqlite3.connect(backups[0]) as connection:
+        assert connection.execute("SELECT service FROM credentials").fetchall() == [
+            ("existing.test",)
+        ]
+
+
+def test_import_many_backup_failure_prevents_mutation(
+    vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches import continuing after its recovery backup fails."""
+    monkeypatch.setattr(
+        vault,
+        "backup",
+        lambda: (_ for _ in ()).throw(DatabaseError("failed")),
+    )
+
+    with pytest.raises(DatabaseError):
+        vault.import_many([draft()], duplicates="skip")
+
+    assert vault.list_all() == []
+
+
+def test_import_many_rejects_conflicting_input_identity(vault: Vault) -> None:
+    """Catches conflicting CSV rows being inserted in input order."""
+    with pytest.raises(ValidationError) as raised:
+        vault.import_many(
+            [draft(password="one"), draft(password="two")],
+            duplicates="skip",
+        )
+
+    assert raised.value.code == "duplicate_conflict"
+    assert vault.list_all() == []
+
+
+def test_import_many_collapses_identical_input_duplicates(vault: Vault) -> None:
+    """Catches identical repeated rows creating repeated vault records."""
+    summary = vault.import_many([draft(), draft()], duplicates="skip")
+
+    assert summary == models.ImportSummary(total=2, inserted=1, updated=0, skipped=1)
+    assert len(vault.list_all()) == 1
+
+
+def test_import_many_all_skipped_creates_no_backup(vault: Vault) -> None:
+    """Catches a no-op import producing unnecessary plaintext backups."""
+    vault.create(
+        service="github.com", label="work", username="nika", password="old", notes=""
+    )
+
+    summary = vault.import_many([draft()], duplicates="skip")
+
+    assert summary == models.ImportSummary(total=1, inserted=0, updated=0, skipped=1)
+    assert list(vault.backup_dir.glob("passwatcher-*.db")) == []
+
+
+def test_import_many_handles_ambiguous_existing_identity_safely(vault: Vault) -> None:
+    """Catches update mode guessing between duplicate existing records."""
+    for password in ("one", "two"):
+        vault.create(
+            service="github.com",
+            label="work",
+            username="nika",
+            password=password,
+            notes="",
+        )
+
+    skipped = vault.import_many([draft()], duplicates="skip")
+    assert skipped.skipped == 1
+
+    for policy in ("update", "error"):
+        with pytest.raises(ValidationError) as raised:
+            vault.import_many([draft()], duplicates=policy)
+        assert raised.value.code == "duplicate_conflict"
+    assert [item.password for item in vault.list_all()] == ["one", "two"]
+
+
+def test_import_many_rejects_invalid_policy(vault: Vault) -> None:
+    """Catches misspelled duplicate policies silently acting like update."""
+    with pytest.raises(ValidationError) as raised:
+        vault.import_many([draft()], duplicates="replace")
+
+    assert raised.value.code == "invalid_duplicate_policy"
+
+
+@pytest.mark.parametrize("count", [0, 3001])
+def test_import_many_enforces_batch_bounds(vault: Vault, count: int) -> None:
+    """Catches empty or unbounded batches reaching SQLite."""
+    with pytest.raises(ValidationError) as raised:
+        vault.import_many([draft()] * count, duplicates="skip")
+
+    assert raised.value.code == "invalid_import_count"
+
+
+def test_import_many_validates_every_field_before_writing(vault: Vault) -> None:
+    """Catches an invalid later row leaving an earlier valid row behind."""
+    with pytest.raises(ValidationError) as raised:
+        vault.import_many([draft(), draft(service="")], duplicates="skip")
+
+    assert raised.value.code == "required_field"
+    assert vault.list_all() == []
+
+
+def test_import_many_rolls_back_prior_insert_on_sql_failure(vault: Vault) -> None:
+    """Catches a database error committing the successful prefix of a batch."""
+    vault.initialize()
+    with sqlite3.connect(vault.path) as connection:
+        connection.execute(
+            "CREATE TRIGGER reject_gitlab BEFORE INSERT ON credentials "
+            "WHEN NEW.service = 'gitlab.com' BEGIN "
+            "SELECT RAISE(ABORT, 'rejected'); END"
+        )
+
+    with pytest.raises(DatabaseError):
+        vault.import_many(
+            [draft(), draft(service="gitlab.com", username="other")],
+            duplicates="skip",
+        )
+
+    assert vault.list_all() == []
 
 
 def test_initialize_is_idempotent_and_create_round_trips(vault: Vault) -> None:
