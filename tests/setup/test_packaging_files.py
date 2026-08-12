@@ -43,6 +43,9 @@ def test_nsis_has_idempotent_path_and_registered_uninstaller_contract() -> None:
     assert "ReadRegStr" not in text
     assert "WriteRegExpandStr" not in text
     assert "DeleteRegValue HKCU \"Environment\" \"Path\"" not in text
+    trusted_powershell = "$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe"
+    assert text.count(trusted_powershell) == 2
+    assert "ExecToLog 'powershell.exe " not in text
     assert "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Passwatcher" in text
     assert 'MessageBox MB_YESNO|MB_ICONQUESTION "Remove local Passwatcher connection settings too?" /SD IDNO' in text
 
@@ -74,6 +77,15 @@ def test_smoke_script_requires_disposable_context_and_refuses_existing_config() 
     assert "Test-Path -LiteralPath $uninstaller -PathType Leaf" in text
     assert "Test-Path -LiteralPath $installDirectory" in text
     assert "Restore-OriginalUserPath" in text
+    assert "Remove-SmokeRegistryMutations" in text
+    assert '"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Passwatcher"' in text
+    assert '"Software\\Passwatcher\\Installer"' in text
+    assert '"PathValueExistedBeforeInstall"' in text
+    assert "DeleteSubKeyTree($uninstallSubKey, $false)" in text
+    assert "DeleteValue($installerStateValueName, $false)" in text
+    assert "$partialUninstall.ExitCode" in text
+    assert "Refusing to overwrite existing Passwatcher uninstall metadata" in text
+    assert "Refusing to overwrite existing Passwatcher installer state" in text
 
 
 def _run_path_transform(operation: str, state: str, value: str, entry: str, restore_absent=False):
@@ -114,8 +126,9 @@ def test_path_helper_uses_length_safe_registry_api() -> None:
 
 def test_path_transform_preserves_long_values_duplicates_and_unrelated_order() -> None:
     entry = r"C:\Users\tester\AppData\Local\Programs\Passwatcher"
-    unrelated = [f"C:\\tools\\segment-{index:04d}" for index in range(700)]
+    unrelated = [f"C:\\tools\\segment-{index:04d}" for index in range(800)]
     original = ";".join(unrelated) + ";;"
+    assert len(original) > 16 * 1024
     added = _run_path_transform("Add", "Present", original, entry)
     if added is None:
         return

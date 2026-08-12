@@ -29,7 +29,7 @@ FunctionEnd
 Function AddToUserPath
   InitPluginsDir
   File /oname=$PLUGINSDIR\update_user_path.ps1 "${PATH_HELPER}"
-  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\update_user_path.ps1" -Operation Add -Entry "$INSTDIR"'
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\update_user_path.ps1" -Operation Add -Entry "$INSTDIR"'
   Pop $0
   StrCmp $0 "0" add_path_success
   DetailPrint "Unable to update the current-user PATH (exit code $0)."
@@ -41,7 +41,7 @@ FunctionEnd
 Function un.RemoveFromUserPath
   InitPluginsDir
   File /oname=$PLUGINSDIR\update_user_path.ps1 "${PATH_HELPER}"
-  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\update_user_path.ps1" -Operation Remove -Entry "$INSTDIR"'
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\update_user_path.ps1" -Operation Remove -Entry "$INSTDIR"'
   Pop $0
   StrCmp $0 "0" remove_path_success
   DetailPrint "Unable to remove Passwatcher from the current-user PATH (exit code $0)."

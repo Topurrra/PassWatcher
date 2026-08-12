@@ -22,6 +22,9 @@ $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalA
 $configDirectory = Join-Path $appData "Passwatcher"
 $installDirectory = Join-Path $localAppData "Programs\Passwatcher"
 $uninstaller = Join-Path $installDirectory "uninstall.exe"
+$uninstallSubKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\Passwatcher"
+$installerStateSubKey = "Software\Passwatcher\Installer"
+$installerStateValueName = "PathValueExistedBeforeInstall"
 $sentinel = "passwatcher-smoke-$([Guid]::NewGuid().ToString('N'))"
 $createdConfig = $false
 
@@ -104,6 +107,56 @@ function Restore-OriginalUserPath {
     }
 }
 
+function Test-RegistrySubKeyExists {
+    param([Parameter(Mandatory)][string]$SubKey)
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($SubKey, $false)
+    if ($null -eq $key) {
+        return $false
+    }
+    $key.Dispose()
+    return $true
+}
+
+function Test-InstallerStateValueExists {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($installerStateSubKey, $false)
+    try {
+        if ($null -eq $key) {
+            return $false
+        }
+        foreach ($valueName in $key.GetValueNames()) {
+            if ([string]::Equals(
+                $valueName,
+                $installerStateValueName,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+                return $true
+            }
+        }
+        return $false
+    }
+    finally {
+        if ($null -ne $key) {
+            $key.Dispose()
+        }
+    }
+}
+
+function Remove-SmokeRegistryMutations {
+    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($uninstallSubKey, $false)
+    $stateKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($installerStateSubKey, $true)
+    try {
+        if ($null -ne $stateKey) {
+            $stateKey.DeleteValue($installerStateValueName, $false)
+        }
+    }
+    finally {
+        if ($null -ne $stateKey) {
+            $stateKey.Dispose()
+        }
+    }
+}
+
 function Get-InstallPathEntryCount {
     $state = Get-UserPathState
     if (-not $state.Exists) {
@@ -122,6 +175,13 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 "@
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
     Invoke-CheckedProcess -FilePath powershell.exe -ArgumentList @("-NoProfile", "-NonInteractive", "-EncodedCommand", $encoded)
+}
+
+if (Test-RegistrySubKeyExists -SubKey $uninstallSubKey) {
+    throw "Refusing to overwrite existing Passwatcher uninstall metadata: HKCU\$uninstallSubKey"
+}
+if (Test-InstallerStateValueExists) {
+    throw "Refusing to overwrite existing Passwatcher installer state: HKCU\$installerStateSubKey\$installerStateValueName"
 }
 
 $originalUserPath = Get-UserPathState
@@ -162,6 +222,12 @@ try {
     if (-not (Test-UserPathMatches -Expected $originalUserPath)) {
         throw "Install/uninstall changed unrelated user PATH content."
     }
+    if (Test-RegistrySubKeyExists -SubKey $uninstallSubKey) {
+        throw "Uninstall left its HKCU uninstall metadata behind."
+    }
+    if (Test-InstallerStateValueExists) {
+        throw "Uninstall left its PATH provenance value behind."
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $configDirectory "config.toml") -PathType Leaf)) {
         throw "Silent uninstall did not retain the sentinel configuration."
     }
@@ -171,17 +237,29 @@ try {
 finally {
     if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
         try {
-            Start-Process -FilePath $uninstaller -ArgumentList @("/S") -Wait | Out-Null
+            $partialUninstall = Start-Process -FilePath $uninstaller -ArgumentList @("/S") -Wait -PassThru
+            if ($partialUninstall.ExitCode -ne 0) {
+                Write-Warning "Partial-install uninstaller exited with code $($partialUninstall.ExitCode)."
+            }
         }
         catch {
             Write-Warning "Partial-install uninstaller cleanup failed: $($_.Exception.Message)"
         }
     }
-    if (Test-Path -LiteralPath $installDirectory) {
-        Remove-Item -LiteralPath $installDirectory -Recurse -Force
-    }
-    if (-not (Test-UserPathMatches -Expected $originalUserPath)) {
-        Restore-OriginalUserPath
+    $fallbackCleanupRequired = (
+        (Test-Path -LiteralPath $installDirectory) -or
+        (-not (Test-UserPathMatches -Expected $originalUserPath)) -or
+        (Test-RegistrySubKeyExists -SubKey $uninstallSubKey) -or
+        (Test-InstallerStateValueExists)
+    )
+    if ($fallbackCleanupRequired) {
+        if (Test-Path -LiteralPath $installDirectory) {
+            Remove-Item -LiteralPath $installDirectory -Recurse -Force
+        }
+        if (-not (Test-UserPathMatches -Expected $originalUserPath)) {
+            Restore-OriginalUserPath
+        }
+        Remove-SmokeRegistryMutations
     }
     if ($createdConfig -and (Test-Path -LiteralPath $configDirectory)) {
         Remove-Item -LiteralPath $configDirectory -Recurse -Force
