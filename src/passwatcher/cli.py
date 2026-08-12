@@ -12,6 +12,15 @@ from typer.core import TyperGroup
 
 from .clipboard import Clipboard
 from .config import ClientConfig, ConfigError, load_config, save_config
+from .csv_export import CsvExportError, export_records, validate_export_destination
+from .csv_import import (
+    CsvFormat,
+    CsvImportError,
+    DuplicatePolicy,
+    parse_import,
+    preview_import,
+    validate_request_size,
+)
 from .passwords import PasswordPolicyError, generate_password
 from .protocol import ProtocolError
 from . import prompts
@@ -129,7 +138,7 @@ def lookup(
         return
     assert query is not None
     _dispatch_command(runtime, query)
-    if query[0] in {"add", "edit", "delete", "generate", "list"}:
+    if query[0] in {"add", "edit", "delete", "export", "generate", "import", "list"}:
         return
     try:
         matches = _service(runtime).search(" ".join(query))
@@ -164,6 +173,115 @@ def _list_records(runtime: _Runtime, *, secrets: bool) -> None:
         _render_expected_error(runtime.renderer, runtime.debug, error)
         raise typer.Exit(1) from None
     runtime.renderer.list_records(records, secrets=secrets)
+
+
+@app.command("import")
+def import_credentials(
+    ctx: typer.Context,
+    path: Annotated[Path, typer.Argument(help="CSV file to import.")],
+    dry_run: Annotated[
+        bool, typer.Option("-n", "--dry-run", help="Validate and preview without importing.")
+    ] = False,
+    duplicates: Annotated[
+        DuplicatePolicy,
+        typer.Option("-d", "--duplicates", help="How to handle existing credentials."),
+    ] = DuplicatePolicy.SKIP,
+    yes: Annotated[
+        bool, typer.Option("-y", "--yes", help="Import without confirmation.")
+    ] = False,
+) -> None:
+    """Preview and atomically import credentials from a local CSV file."""
+    runtime: _Runtime = ctx.obj
+    _import_credentials(runtime, path, dry_run=dry_run, duplicates=duplicates, yes=yes)
+
+
+def _import_credentials(
+    runtime: _Runtime,
+    path: Path,
+    *,
+    dry_run: bool,
+    duplicates: DuplicatePolicy,
+    yes: bool,
+) -> None:
+    try:
+        parsed = parse_import(path)
+        existing = _service(runtime).list_all()
+        preview = preview_import(parsed, existing, duplicates)
+        validate_request_size(parsed, duplicates)
+        runtime.renderer.import_preview(preview)
+        if dry_run:
+            return
+        if not yes and not prompts.confirm("Import credentials?", default=False):
+            _cancelled()
+            return
+        summary = _service(runtime).import_many(list(parsed.records), duplicates.value)
+    except prompts.PromptCancelled:
+        _cancelled()
+        return
+    except CsvImportError as error:
+        if error.issues:
+            runtime.renderer.import_errors(error.issues)
+        else:
+            runtime.renderer.error(error.message)
+        raise typer.Exit(1) from None
+    except (ConfigError, TransportError, ProtocolError) as error:
+        if isinstance(error, ProtocolError) and error.code in {
+            "incompatible_protocol",
+            "unknown_operation",
+        }:
+            runtime.renderer.error("Run `pw setup` to upgrade the remote server.")
+        else:
+            _render_expected_error(runtime.renderer, runtime.debug, error)
+        raise typer.Exit(1) from None
+    runtime.renderer.import_complete(summary)
+
+
+@app.command("export")
+def export_credentials(
+    ctx: typer.Context,
+    path: Annotated[Path, typer.Argument(help="Local CSV destination.")],
+    csv_format: Annotated[
+        CsvFormat,
+        typer.Option("-t", "--format", help="Export format."),
+    ] = CsvFormat.PASSWATCHER,
+    force: Annotated[
+        bool, typer.Option("-f", "--force", help="Replace an existing regular file.")
+    ] = False,
+    yes: Annotated[
+        bool, typer.Option("-y", "--yes", help="Acknowledge plaintext risk without prompting.")
+    ] = False,
+) -> None:
+    """Export credentials to an atomic local plaintext CSV file."""
+    runtime: _Runtime = ctx.obj
+    _export_credentials(runtime, path, csv_format=csv_format, force=force, yes=yes)
+
+
+def _export_credentials(
+    runtime: _Runtime,
+    path: Path,
+    *,
+    csv_format: CsvFormat,
+    force: bool,
+    yes: bool,
+) -> None:
+    try:
+        validate_export_destination(path, force=force)
+        runtime.renderer.export_warning(path, csv_format)
+        if not yes and not prompts.confirm("Export plaintext credentials?", default=False):
+            _cancelled()
+            return
+        records = _service(runtime).list_all()
+        count = export_records(path, records, csv_format, force=force)
+    except prompts.PromptCancelled:
+        _cancelled()
+        return
+    except CsvExportError as error:
+        runtime.renderer.error(error.message)
+        raise typer.Exit(1) from None
+    except (ConfigError, TransportError, ProtocolError) as error:
+        _render_expected_error(runtime.renderer, runtime.debug, error)
+        raise typer.Exit(1) from None
+    runtime.renderer.export_complete(count, path, csv_format)
 
 
 @app.command("add")
