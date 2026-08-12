@@ -24,6 +24,8 @@ from .csv_import import (
 from .passwords import PasswordPolicyError, generate_password
 from .protocol import ProtocolError
 from . import prompts
+from .local_crypto import DpapiProtector
+from .local_vault import LocalPasswordService, default_local_vault_path
 from .render import Renderer
 from .service import CredentialRecord, CredentialService, PasswordService
 from .setup import Doctor, SetupError, SetupManager, SubprocessSetupRunner
@@ -87,9 +89,16 @@ def create_service(config_path: Path) -> CredentialService:
         app_config = load_config(config_path)
     except OSError as error:
         raise ConfigError("unable to read configuration") from error
-    if app_config.backend is not BackendMode.REMOTE or app_config.remote is None:
-        raise ConfigError("local vault support is not available in this build")
+    if app_config.backend is BackendMode.LOCAL:
+        return create_local_service()
+    if app_config.remote is None:
+        raise ConfigError("remote settings are required for the remote backend")
     return PasswordService(SshTransport(app_config.remote))
+
+
+def create_local_service() -> LocalPasswordService:
+    """Build the production current-user DPAPI local service."""
+    return LocalPasswordService(default_local_vault_path(), DpapiProtector())
 
 
 def create_clipboard() -> Clipboard:
