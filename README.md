@@ -109,9 +109,9 @@ py -3.11 -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 makensis /VERSION
-python tools/verify_release_version.py v0.2.0
+python tools/verify_release_version.py v1.0.0
 powershell -ExecutionPolicy Bypass -File tools/build_windows.ps1
-Get-FileHash -Algorithm SHA256 dist\Passwatcher-Setup-0.2.0.exe
+Get-FileHash -Algorithm SHA256 dist\Passwatcher-Setup-1.0.0.exe
 ```
 
 The build runs the complete test suite and produces `dist\passwatcher\pw.exe` and `dist\Passwatcher-Setup-<version>.exe`.

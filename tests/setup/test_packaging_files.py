@@ -47,11 +47,11 @@ def test_uninstaller_preserves_local_dpapi_vault_by_default() -> None:
     assert 'RMDir /r "$LOCALAPPDATA\\Passwatcher"' not in text
 
 
-def test_feature_release_version_is_0_2_0() -> None:
+def test_feature_release_version_is_1_0_0() -> None:
     """Catches the release workflow producing a stale versioned installer."""
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-    assert metadata["project"]["version"] == "0.2.0"
-    assert passwatcher.__version__ == "0.2.0"
+    assert metadata["project"]["version"] == "1.0.0"
+    assert passwatcher.__version__ == "1.0.0"
 
 
 def test_package_version_matches_project_metadata() -> None:
