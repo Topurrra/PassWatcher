@@ -143,7 +143,7 @@ SSH encrypts credentials in transit. Secrets are sent in JSON on SSH standard in
 
 ## Build a Windows release
 
-Install Python 3.11+, the development dependencies (including PyInstaller 6), and NSIS 3.x with `makensis` on `PATH`. From the repository root run:
+Install Python 3.11+, the development dependencies (including PyInstaller 6), and NSIS 3.x with `makensis` available. From the repository root run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/build_windows.ps1
@@ -151,21 +151,4 @@ powershell -ExecutionPolicy Bypass -File tools/build_windows.ps1
 
 The script rebuilds the deterministic Linux server zipapp, runs the complete test suite, builds `dist\passwatcher\pw.exe` plus its runtime files, and creates `dist\Passwatcher-Setup-<version>.exe`. It stops at the first failed gate.
 
-The installer smoke test is intentionally guarded because it changes the current user's install directory and user `PATH`. Run it only inside a disposable Windows user account or CI worker whose Passwatcher paths do not exist:
-
-```powershell
-$env:PASSWATCHER_SMOKE_ISOLATED_USER = "1"
-powershell -ExecutionPolicy Bypass -File tests/setup/windows-installer-smoke.ps1 -Installer "dist/Passwatcher-Setup-*.exe"
-```
-
-The smoke test refuses an existing Passwatcher installation or config directory. It installs twice, resolves `pw --help` through a fresh process and the user `PATH`, verifies configuration preservation, silently uninstalls with configuration retention, checks cleanup, and removes only the sentinel config directory that it created.
-
-The destructive-option safety smoke has a second explicit guard. In the same disposable user or CI worker, run:
-
-```powershell
-$env:PASSWATCHER_SMOKE_ISOLATED_USER = "1"
-$env:PASSWATCHER_SMOKE_DESTRUCTIVE_CANARIES = "1"
-powershell -ExecutionPolicy Bypass -File tests/setup/windows-installer-safety-smoke.ps1 -Installer "dist/Passwatcher-Setup-*.exe"
-```
-
-It creates uniquely named canaries only beneath the current user's temporary directory, verifies installer and uninstaller `/D=` plus uninstaller `_?=` cannot redirect Passwatcher cleanup, confirms unexpected install-directory files survive upgrades and uninstall, and exercises owned versus pre-existing user `PATH` entries. It refuses any existing Passwatcher installation, installer registry state, or exact user `PATH` entry before making changes.
+See the [step-by-step Windows installer guide](docs/BUILDING_INSTALLER.md) for clean-machine setup, version verification, checksums, manual upgrade/uninstall checks, troubleshooting, and the guarded smoke-test commands. Run smoke tests only in a disposable Windows account or CI worker: they intentionally change that user's installation directory, registry state, and `PATH`.
