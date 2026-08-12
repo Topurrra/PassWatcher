@@ -93,6 +93,10 @@ class SetupManager:
             and state.protocol_version == PROTOCOL_VERSION
             and state.schema_version in (None, SCHEMA_VERSION)
         )
+        if compatible and not state.modes_ok:
+            raise SetupError(
+                "permissions_insecure", "The remote vault permissions are not secure"
+            )
         action = "reused" if compatible else ("upgraded" if state.installed else "installed")
 
         if not compatible:
@@ -113,6 +117,10 @@ class SetupManager:
             or health.get("integrity_check") != "ok"
         ):
             raise SetupError("health_failed", "The remote vault failed its health check")
+        if health.get("permissions_ok") is not True:
+            raise SetupError(
+                "permissions_insecure", "The remote vault permissions are not secure"
+            )
         return SetupResult(action, health)
 
     def _bundle_digest(self) -> str:
@@ -127,15 +135,27 @@ import json, os, re, sqlite3, stat, sys, zipfile
 from pathlib import Path
 server = Path('~/.local/bin/passwatcher-server').expanduser()
 data = Path('~/.local/share/passwatcher').expanduser()
+install = data / 'install'
 database = data / 'passwatcher.db'
 backup = data / 'backups'
+def mode(path):
+    return stat.S_IMODE(path.stat().st_mode) if path.exists() else None
 result = {
     'installed': server.is_file(),
     'protocol_version': None,
     'schema_version': None,
     'database_exists': database.is_file(),
     'python_version': list(sys.version_info[:3]),
-    'modes_ok': False,
+    'modes': {
+        'server': mode(server),
+        'data_dir': mode(data),
+        'install_dir': mode(install),
+        'backup_dir': mode(backup),
+        'database': mode(database),
+        'wal': mode(database.with_name(database.name + '-wal')),
+        'shm': mode(database.with_name(database.name + '-shm')),
+        'backup_files': [mode(path) for path in sorted(backup.glob('passwatcher-*.db'))] if backup.is_dir() else [],
+    },
     'integrity_check': None,
     'read_access': False,
 }
@@ -155,12 +175,6 @@ try:
             result['integrity_check'] = connection.execute('PRAGMA integrity_check').fetchone()[0]
             connection.execute('SELECT id FROM credentials LIMIT 1').fetchone()
             result['read_access'] = True
-    directories = [path for path in (data, backup) if path.exists()]
-    files = [path for path in (server, database, database.with_name(database.name + '-wal'), database.with_name(database.name + '-shm')) if path.exists()]
-    result['modes_ok'] = (
-        all(stat.S_IMODE(path.stat().st_mode) == 0o700 for path in directories)
-        and all(stat.S_IMODE(path.stat().st_mode) in ({0o700} if path == server else {0o600}) for path in files)
-    )
 except Exception:
     pass
 print(json.dumps(result, separators=(',', ':')))
@@ -180,6 +194,29 @@ _INSTALL_COMMAND = (
 _BACKUP_COMMAND = "~/.local/bin/passwatcher-server backup"
 
 
+def _remote_modes_ok(
+    value: object, *, installed: bool, database_exists: bool
+) -> bool:
+    """Validate every required and present remote path against its exact owner-only mode."""
+    if not isinstance(value, dict):
+        return False
+    required_directories = ("data_dir", "install_dir", "backup_dir")
+    if any(value.get(name) != 0o700 for name in required_directories):
+        return False
+    if installed and value.get("server") != 0o700:
+        return False
+    if database_exists and value.get("database") != 0o600:
+        return False
+    for optional_file in ("wal", "shm"):
+        mode = value.get(optional_file)
+        if mode is not None and mode != 0o600:
+            return False
+    backup_files = value.get("backup_files")
+    if not isinstance(backup_files, list):
+        return False
+    return all(type(mode) is int and mode == 0o600 for mode in backup_files)
+
+
 class SubprocessSetupRunner:
     """Run only the fixed SSH/SCP operations required by setup and doctor."""
 
@@ -194,13 +231,19 @@ class SubprocessSetupRunner:
         try:
             value = json.loads(completed.stdout.decode("utf-8"))
             python_version = value["python_version"]
+            installed = value["installed"]
+            database_exists = value["database_exists"]
             return RemoteState(
-                installed=value["installed"],
+                installed=installed,
                 protocol_version=value["protocol_version"],
                 schema_version=value["schema_version"],
-                database_exists=value["database_exists"],
+                database_exists=database_exists,
                 python_version=tuple(python_version),
-                modes_ok=value["modes_ok"],
+                modes_ok=_remote_modes_ok(
+                    value["modes"],
+                    installed=installed,
+                    database_exists=database_exists,
+                ),
                 integrity_check=value["integrity_check"],
                 read_access=value["read_access"],
             )

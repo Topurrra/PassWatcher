@@ -6,7 +6,13 @@ import subprocess
 import pytest
 
 from passwatcher.config import ClientConfig
-from passwatcher.setup import RemoteState, SetupError, SetupManager, SubprocessSetupRunner
+from passwatcher.setup import (
+    RemoteState,
+    SetupError,
+    SetupManager,
+    SubprocessSetupRunner,
+    _remote_modes_ok,
+)
 
 
 class FakeRemote:
@@ -16,7 +22,11 @@ class FakeRemote:
         self.uploads: list[Path] = []
         self.database_mutations: list[str] = []
         self.created_databases = 0
-        self.health_result = {"schema_version": 1, "integrity_check": "ok"}
+        self.health_result = {
+            "schema_version": 1,
+            "integrity_check": "ok",
+            "permissions_ok": True,
+        }
 
     def inspect(self, _config: ClientConfig) -> RemoteState:
         return self.state
@@ -41,7 +51,7 @@ class FakeRemote:
         self.events.append("initialize")
         self.database_mutations.append("initialize")
         self.created_databases += 1
-        self.state = RemoteState(True, 1, 1, True)
+        self.state = RemoteState(True, 1, 1, True, modes_ok=True)
 
     def health(self, _config: ClientConfig) -> dict[str, object]:
         self.events.append("health")
@@ -71,7 +81,7 @@ def config() -> ClientConfig:
 
 def test_setup_reuses_compatible_installation(manager: SetupManager, remote: FakeRemote) -> None:
     """Catches setup replacing a compatible server or touching its database."""
-    remote.state = RemoteState(True, 1, 1, True)
+    remote.state = RemoteState(True, 1, 1, True, modes_ok=True)
 
     result = manager.install_or_upgrade(config(), remote.state)
 
@@ -84,7 +94,7 @@ def test_upgrade_backs_up_before_replacing_server(
     manager: SetupManager, remote: FakeRemote
 ) -> None:
     """Catches a bundle replacement that can strand an unbacked-up vault."""
-    remote.state = RemoteState(True, 0, 1, True)
+    remote.state = RemoteState(True, 0, 1, True, modes_ok=True)
 
     manager.install_or_upgrade(config(), remote.state)
 
@@ -121,12 +131,41 @@ def test_bundle_digest_is_verified_before_atomic_install(
 
 def test_failed_health_is_a_setup_error(manager: SetupManager, remote: FakeRemote) -> None:
     """Catches setup claiming success when remote integrity is not healthy."""
-    remote.health_result = {"schema_version": 1, "integrity_check": "corrupt"}
+    remote.health_result = {
+        "schema_version": 1,
+        "integrity_check": "corrupt",
+        "permissions_ok": True,
+    }
 
     with pytest.raises(SetupError) as error:
-        manager.install_or_upgrade(config(), RemoteState(True, 1, 1, True))
+        manager.install_or_upgrade(config(), RemoteState(True, 1, 1, True, modes_ok=True))
 
     assert error.value.code == "health_failed"
+
+
+def test_setup_rejects_insecure_compatible_installation(
+    manager: SetupManager, remote: FakeRemote
+) -> None:
+    """Catches reuse accepting a protocol-compatible vault with insecure mode bits."""
+    state = RemoteState(True, 1, 1, True, modes_ok=False)
+
+    with pytest.raises(SetupError) as error:
+        manager.install_or_upgrade(config(), state)
+
+    assert error.value.code == "permissions_insecure"
+    assert remote.uploads == []
+
+
+def test_setup_rejects_insecure_final_health(
+    manager: SetupManager, remote: FakeRemote
+) -> None:
+    """Catches setup success when the server reports insecure vault permissions."""
+    remote.health_result["permissions_ok"] = False
+
+    with pytest.raises(SetupError) as error:
+        manager.install_or_upgrade(config(), RemoteState(False, None, None, False))
+
+    assert error.value.code == "permissions_insecure"
 
 
 def test_setup_rejects_an_explicitly_unsupported_remote_python(
@@ -159,3 +198,40 @@ def test_health_rpc_does_not_pass_both_input_and_stdin(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     assert SubprocessSetupRunner().health(config())["integrity_check"] == "ok"
+
+
+def secure_remote_modes() -> dict[str, object]:
+    return {
+        "server": 0o700,
+        "data_dir": 0o700,
+        "install_dir": 0o700,
+        "backup_dir": 0o700,
+        "database": 0o600,
+        "wal": None,
+        "shm": None,
+        "backup_files": [],
+    }
+
+
+def test_remote_modes_reject_absent_required_paths() -> None:
+    """Catches missing core installation paths passing through vacuous all checks."""
+    modes = secure_remote_modes()
+    modes["server"] = None
+
+    assert _remote_modes_ok(modes, installed=True, database_exists=True) is False
+
+
+def test_remote_modes_reject_insecure_install_directory() -> None:
+    """Catches a world-readable staging directory being omitted from doctor."""
+    modes = secure_remote_modes()
+    modes["install_dir"] = 0o755
+
+    assert _remote_modes_ok(modes, installed=True, database_exists=True) is False
+
+
+def test_remote_modes_reject_insecure_backup_file() -> None:
+    """Catches an existing backup database with non-owner-only permissions."""
+    modes = secure_remote_modes()
+    modes["backup_files"] = [0o600, 0o644]
+
+    assert _remote_modes_ok(modes, installed=True, database_exists=True) is False
