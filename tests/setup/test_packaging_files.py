@@ -241,9 +241,10 @@ def test_smoke_fallback_attempts_registry_cleanup_after_earlier_failure(tmp_path
     if shell is None:
         return
     cleanup_helper = Path("tests/setup/windows-installer-cleanup.ps1").resolve()
+    escaped_cleanup_helper = str(cleanup_helper).replace("'", "''")
     harness = tmp_path / "cleanup-harness.ps1"
     harness.write_text(
-        f". '{str(cleanup_helper).replace("'", "''")}'\n"
+        f". '{escaped_cleanup_helper}'\n"
         "$events = [Collections.Generic.List[string]]::new()\n"
         "$message = $null\n"
         "try {\n"
