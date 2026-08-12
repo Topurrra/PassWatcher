@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from passwatcher import cli as cli_module
@@ -192,12 +193,10 @@ def test_generate_displays_and_copies_one_password(cli, clipboard):
 
 def test_global_plain_option_precedes_generate_help(cli):
     """Catches root flags causing command help to be parsed as a lookup query."""
-    result = cli.invoke(
-        app, ["--plain", "generate", "--help"], env={"NO_COLOR": "1"}
-    )
+    result = cli.invoke(app, ["--plain", "generate", "--help"])
 
     assert result.exit_code == 0
-    assert "--length" in result.stdout
+    assert "--length" in Text.from_ansi(result.stdout).plain
 
 
 def test_global_config_option_precedes_add(cli, service):

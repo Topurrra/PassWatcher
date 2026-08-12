@@ -4,6 +4,7 @@ import csv
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from passwatcher import cli as cli_module
@@ -249,15 +250,17 @@ def test_export_service_error_creates_no_destination(
 
 def test_csv_help_shows_short_and_long_flags(cli: CliRunner, service: FakeService) -> None:
     """Catches approved concise aliases disappearing from command help."""
-    imported = cli.invoke(app, ["import", "--help"], env={"NO_COLOR": "1"})
-    exported = cli.invoke(app, ["export", "--help"], env={"NO_COLOR": "1"})
+    imported = cli.invoke(app, ["import", "--help"])
+    exported = cli.invoke(app, ["export", "--help"])
+    import_help = Text.from_ansi(imported.stdout).plain
+    export_help = Text.from_ansi(exported.stdout).plain
 
     assert imported.exit_code == exported.exit_code == 0
-    assert "-n" in imported.stdout and "--dry-run" in imported.stdout
-    assert "-d" in imported.stdout and "--duplicates" in imported.stdout
-    assert "-t" in exported.stdout and "--format" in exported.stdout
-    assert "-f" in exported.stdout and "--force" in exported.stdout
-    assert "-y" in imported.stdout and "--yes" in imported.stdout
+    assert "-n" in import_help and "--dry-run" in import_help
+    assert "-d" in import_help and "--duplicates" in import_help
+    assert "-t" in export_help and "--format" in export_help
+    assert "-f" in export_help and "--force" in export_help
+    assert "-y" in import_help and "--yes" in import_help
 
 
 def test_global_options_route_to_csv_commands(
