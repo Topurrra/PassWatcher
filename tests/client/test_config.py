@@ -1,8 +1,18 @@
+import os
 from pathlib import Path
+import sys
 
 import pytest
 
 from passwatcher.config import ClientConfig, ConfigError, load_config, save_config
+from passwatcher.cli import default_config_path
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows config location contract")
+def test_default_config_path_uses_roaming_appdata_on_windows():
+    expected = Path(os.environ["APPDATA"]) / "Passwatcher" / "config.toml"
+
+    assert default_config_path() == expected
 
 
 def test_config_round_trip(tmp_path):

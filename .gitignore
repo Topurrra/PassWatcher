@@ -15,3 +15,5 @@ __pycache__/
 pytest-cache-files-*/
 .pytest-tmp/
 *.egg-info/
+/build/
+/dist/

@@ -69,7 +69,7 @@ class _Runtime:
 
 def default_config_path() -> Path:
     """Return the user-local location for the connection-only configuration."""
-    return Path(user_config_dir("Passwatcher", appauthor=False)) / "config.toml"
+    return Path(user_config_dir("Passwatcher", appauthor=False, roaming=True)) / "config.toml"
 
 
 def create_service(config_path: Path) -> PasswordService:
