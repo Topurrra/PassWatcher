@@ -23,6 +23,21 @@ def text(label: str, *, default: str | None = None, secret: bool = False) -> str
         raise PromptCancelled from error
 
 
+def optional_text(label: str, *, current: str | None = None) -> str:
+    """Read optional text; Enter keeps a current value and ``/clear`` removes it."""
+    try:
+        value = typer.prompt(
+            label,
+            default=current if current is not None else "",
+            show_default=current not in (None, ""),
+        )
+    except (typer.Abort, EOFError, KeyboardInterrupt) as error:
+        raise PromptCancelled from error
+    if current is not None and value == "/clear":
+        return ""
+    return value
+
+
 def confirm(label: str, *, default: bool = False) -> bool:
     """Prompt for confirmation, defaulting to the caller's safe choice."""
     try:

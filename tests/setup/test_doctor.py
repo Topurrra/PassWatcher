@@ -141,6 +141,23 @@ def test_setup_persists_only_connection_fields_after_confirmed_health(
     assert "password" not in config_path.read_text(encoding="utf-8").lower()
 
 
+def test_setup_accepts_empty_optional_identity_file(
+    cli: CliRunner,
+    setup_manager: FakeSetupManager,
+    config_path: Path,
+) -> None:
+    """Catches an optional identity prompt consuming the confirmation as a value."""
+    result = cli.invoke(
+        app,
+        ["--config", str(config_path), "setup"],
+        input="vault.example\nnika\n22\n\ny\n",
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert setup_manager.installs == 1
+    assert load_config(config_path).identity_file is None
+
+
 def test_setup_confirmation_precedes_any_remote_connection(
     cli: CliRunner,
     setup_manager: FakeSetupManager,

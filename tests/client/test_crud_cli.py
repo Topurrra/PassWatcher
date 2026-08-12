@@ -13,6 +13,7 @@ class FakeService:
     def __init__(self) -> None:
         self.matches: list[CredentialRecord] = []
         self.created: CredentialRecord | None = None
+        self.updated: CredentialRecord | None = None
         self.updated_id: int | None = None
         self.deleted_ids: list[int] = []
 
@@ -37,7 +38,7 @@ class FakeService:
         notes: str,
     ) -> CredentialRecord:
         self.updated_id = credential_id
-        return record(
+        self.updated = record(
             id=credential_id,
             service=service,
             label=label,
@@ -45,6 +46,7 @@ class FakeService:
             password=password,
             notes=notes,
         )
+        return self.updated
 
     def delete(self, credential_id: int) -> None:
         self.deleted_ids.append(credential_id)
@@ -107,6 +109,32 @@ def test_add_prompts_and_creates(cli, service):
     assert result.exit_code == 0
     assert service.created is not None
     assert service.created.password == "typed-secret"
+
+
+def test_add_accepts_empty_optional_fields(cli, service):
+    """Catches fields labelled optional forcing placeholder input."""
+    result = cli.invoke(app, ["add"], input="github.com\n\nnika\nsecret\n\ny\n")
+
+    assert result.exit_code == 0
+    assert service.created is not None
+    assert service.created.label == ""
+    assert service.created.notes == ""
+
+
+def test_edit_can_clear_optional_fields(cli, service):
+    """Catches optional edit fields lacking a way to remove stored values."""
+    service.matches = [record(label="work", notes="private")]
+
+    result = cli.invoke(
+        app,
+        ["edit", "github"],
+        input="\n/clear\n\n\n/clear\ny\n",
+    )
+
+    assert result.exit_code == 0
+    assert service.updated is not None, result.stdout
+    assert service.updated.label == ""
+    assert service.updated.notes == ""
 
 
 def test_edit_many_requires_numbered_selection(cli, service):

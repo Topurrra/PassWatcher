@@ -190,10 +190,10 @@ def _add(
 ) -> None:
     try:
         service = service if service is not None else prompts.text("Service")
-        label = label if label is not None else prompts.text("Label (optional)")
+        label = label if label is not None else prompts.optional_text("Label (optional)")
         username = username if username is not None else prompts.text("Username")
         password = _password_value(password)
-        notes = notes if notes is not None else prompts.text("Notes (optional)")
+        notes = notes if notes is not None else prompts.optional_text("Notes (optional)")
         if not prompts.confirm("Create credential?", default=False):
             _cancelled()
             return
@@ -234,10 +234,14 @@ def _edit(
     try:
         record = _select_match(runtime, query)
         service = service if service is not None else prompts.text("Service", default=record.service)
-        label = label if label is not None else prompts.text("Label (optional)", default=record.label)
+        label = label if label is not None else prompts.optional_text(
+            "Label (optional; /clear removes)", current=record.label
+        )
         username = username if username is not None else prompts.text("Username", default=record.username)
         password = _password_value(password, current=record.password)
-        notes = notes if notes is not None else prompts.text("Notes (optional)", default=record.notes)
+        notes = notes if notes is not None else prompts.optional_text(
+            "Notes (optional; /clear removes)", current=record.notes
+        )
         if not prompts.confirm("Update credential?", default=False):
             _cancelled()
             return
@@ -309,7 +313,7 @@ def guided_setup(ctx: typer.Context) -> None:
         host = prompts.text("SSH host").strip()
         user = prompts.text("SSH user").strip()
         raw_port = prompts.text("SSH port", default="22").strip()
-        identity = prompts.text("Identity file (optional)").strip()
+        identity = prompts.optional_text("Identity file (optional)").strip()
         try:
             port = int(raw_port)
         except ValueError:
@@ -436,7 +440,11 @@ def _generation_options(arguments: list[str]) -> dict[str, int | bool]:
 def _password_value(value: str | None, *, current: str | None = None) -> str:
     """Resolve a typed or generated password without displaying existing secrets."""
     if value is None:
-        value = prompts.text("Password (or 'generate')", secret=True)
+        value = prompts.text(
+            "Password (or 'generate')",
+            default="" if current is not None else None,
+            secret=True,
+        )
     if not value and current is not None:
         return current
     if value.casefold() == "generate":
