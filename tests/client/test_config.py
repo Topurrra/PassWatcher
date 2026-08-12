@@ -4,7 +4,14 @@ import sys
 
 import pytest
 
-from passwatcher.config import ClientConfig, ConfigError, load_config, save_config
+from passwatcher.config import (
+    AppConfig,
+    BackendMode,
+    ClientConfig,
+    ConfigError,
+    load_config,
+    save_config,
+)
 from passwatcher.cli import default_config_path
 
 
@@ -17,12 +24,45 @@ def test_default_config_path_uses_roaming_appdata_on_windows():
 
 def test_config_round_trip(tmp_path):
     path = tmp_path / "config.toml"
-    expected = ClientConfig("vault.example", "nika", 2222, Path("C:/keys/vault"))
+    expected = AppConfig(
+        BackendMode.REMOTE,
+        ClientConfig("vault.example", "nika", 2222, Path("C:/keys/vault")),
+    )
 
     save_config(path, expected)
 
     assert load_config(path) == expected
     assert "password" not in path.read_text(encoding="utf-8").lower()
+
+
+def test_legacy_connection_config_loads_as_remote(tmp_path):
+    """Catches an upgrade making existing remote-only installations unusable."""
+    path = tmp_path / "config.toml"
+    path.write_text('host="vault"\nuser="nika"\nport=22\n', encoding="utf-8")
+
+    assert load_config(path) == AppConfig(
+        BackendMode.REMOTE, ClientConfig("vault", "nika", 22)
+    )
+
+
+def test_local_config_round_trip_can_remember_remote_settings(tmp_path):
+    """Catches local activation discarding values needed to switch back to remote."""
+    path = tmp_path / "config.toml"
+    expected = AppConfig(
+        BackendMode.LOCAL,
+        ClientConfig("vault", "nika", 2222, Path("C:/keys/vault")),
+    )
+
+    save_config(path, expected)
+
+    assert load_config(path) == expected
+    assert 'backend = "local"' in path.read_text(encoding="utf-8")
+
+
+def test_remote_backend_requires_remote_settings():
+    """Catches an active remote mode that cannot construct its transport."""
+    with pytest.raises(ConfigError, match="remote settings"):
+        AppConfig(BackendMode.REMOTE)
 
 
 def test_config_rejects_invalid_port(tmp_path):

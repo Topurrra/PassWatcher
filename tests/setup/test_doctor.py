@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from passwatcher import cli as cli_module
 from passwatcher.cli import app
-from passwatcher.config import ClientConfig, load_config, save_config
+from passwatcher.config import AppConfig, BackendMode, ClientConfig, load_config, save_config
 from passwatcher.setup import Doctor, RemoteState, SetupError, SetupResult
 
 
@@ -135,8 +135,9 @@ def test_setup_persists_only_connection_fields_after_confirmed_health(
 
     assert result.exit_code == 0, result.stdout
     assert setup_manager.installs == 1
-    assert load_config(config_path) == ClientConfig(
-        "vault.example", "nika", 2222, Path("C:/keys/vault")
+    assert load_config(config_path) == AppConfig(
+        BackendMode.REMOTE,
+        ClientConfig("vault.example", "nika", 2222, Path("C:/keys/vault")),
     )
     assert "password" not in config_path.read_text(encoding="utf-8").lower()
 
@@ -155,7 +156,8 @@ def test_setup_accepts_empty_optional_identity_file(
 
     assert result.exit_code == 0, result.stdout
     assert setup_manager.installs == 1
-    assert load_config(config_path).identity_file is None
+    assert load_config(config_path).remote is not None
+    assert load_config(config_path).remote.identity_file is None
 
 
 def test_setup_confirmation_precedes_any_remote_connection(
@@ -206,7 +208,10 @@ def test_production_doctor_uses_only_non_mutating_runner_operations(
 ) -> None:
     """Catches diagnostics that repair permissions, initialize, or replace remote files."""
     config_path = tmp_path / "config.toml"
-    save_config(config_path, ClientConfig("vault.example", "nika"))
+    save_config(
+        config_path,
+        AppConfig(BackendMode.REMOTE, ClientConfig("vault.example", "nika")),
+    )
     runner = FakeSetupRunner()
     monkeypatch.setattr("passwatcher.setup.shutil.which", lambda _name: "available")
 
@@ -221,7 +226,10 @@ def test_doctor_does_not_report_contradictory_connectivity_when_inspection_fails
 ) -> None:
     """Catches successful SSH followed by inspect failure producing PASS and FAIL connectivity."""
     config_path = tmp_path / "config.toml"
-    save_config(config_path, ClientConfig("vault.example", "nika"))
+    save_config(
+        config_path,
+        AppConfig(BackendMode.REMOTE, ClientConfig("vault.example", "nika")),
+    )
     runner = FakeSetupRunner()
     runner.inspect_failure = SetupError("inspect_failed", "inspection failed")
     monkeypatch.setattr("passwatcher.setup.shutil.which", lambda _name: "available")

@@ -55,6 +55,36 @@ class ImportSummary:
     skipped: int
 
 
+class CredentialService(Protocol):
+    """Storage-independent credential operations consumed by the CLI."""
+
+    def search(self, query: str) -> list[CredentialRecord]: ...
+
+    def list_all(self) -> list[CredentialRecord]: ...
+
+    def create(
+        self, service: str, label: str, username: str, password: str, notes: str
+    ) -> CredentialRecord: ...
+
+    def update(
+        self,
+        credential_id: int,
+        service: str,
+        label: str,
+        username: str,
+        password: str,
+        notes: str,
+    ) -> CredentialRecord: ...
+
+    def delete(self, credential_id: int) -> None: ...
+
+    def health(self) -> dict[str, object]: ...
+
+    def import_many(
+        self, records: list[CredentialDraft], duplicates: str
+    ) -> ImportSummary: ...
+
+
 class PasswordService:
     """Expose typed credential operations over an injected request transport."""
 

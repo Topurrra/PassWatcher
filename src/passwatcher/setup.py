@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from typing import Protocol
 
-from .config import ClientConfig, ConfigError, load_config
+from .config import BackendMode, ClientConfig, ConfigError, load_config
 from .protocol import PROTOCOL_VERSION, make_request, parse_response
 
 
@@ -349,6 +349,12 @@ class Doctor:
         else:
             checks.append(("Configuration", True, "valid"))
 
+        remote_config = (
+            config.remote
+            if config is not None and config.backend is BackendMode.REMOTE
+            else None
+        )
+
         ssh_available = shutil.which("ssh") is not None
         scp_available = shutil.which("scp") is not None
         checks.extend(
@@ -357,12 +363,12 @@ class Doctor:
                 ("SCP", scp_available, "available" if scp_available else "missing"),
             ]
         )
-        if config is None or not ssh_available:
+        if remote_config is None or not ssh_available:
             checks.extend(self._unavailable_remote_checks())
             return checks
 
         try:
-            self._runner.connectivity(config)
+            self._runner.connectivity(remote_config)
             checks.append(("Connectivity", True, "connected"))
         except SetupError as error:
             checks.append(("Connectivity", False, error.code))
@@ -370,7 +376,7 @@ class Doctor:
             return checks
 
         try:
-            state = self._runner.inspect(config)
+            state = self._runner.inspect(remote_config)
         except SetupError as error:
             checks.append(("Remote inspection", False, error.code))
             checks.extend(self._unavailable_remote_checks(include_connectivity=False))

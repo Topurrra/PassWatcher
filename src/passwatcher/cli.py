@@ -11,7 +11,7 @@ from platformdirs import user_config_dir
 from typer.core import TyperGroup
 
 from .clipboard import Clipboard
-from .config import ClientConfig, ConfigError, load_config, save_config
+from .config import AppConfig, BackendMode, ClientConfig, ConfigError, load_config, save_config
 from .csv_export import CsvExportError, export_records, validate_export_destination
 from .csv_import import (
     CsvFormat,
@@ -25,7 +25,7 @@ from .passwords import PasswordPolicyError, generate_password
 from .protocol import ProtocolError
 from . import prompts
 from .render import Renderer
-from .service import CredentialRecord, PasswordService
+from .service import CredentialRecord, CredentialService, PasswordService
 from .setup import Doctor, SetupError, SetupManager, SubprocessSetupRunner
 from .transport import SshTransport, TransportError
 
@@ -69,7 +69,7 @@ app = typer.Typer(
 
 @dataclass(slots=True)
 class _Runtime:
-    service: PasswordService | None
+    service: CredentialService | None
     clipboard: Clipboard
     renderer: Renderer
     debug: bool
@@ -81,13 +81,15 @@ def default_config_path() -> Path:
     return Path(user_config_dir("Passwatcher", appauthor=False, roaming=True)) / "config.toml"
 
 
-def create_service(config_path: Path) -> PasswordService:
+def create_service(config_path: Path) -> CredentialService:
     """Build the production service; tests replace this narrow construction seam."""
     try:
-        config = load_config(config_path)
+        app_config = load_config(config_path)
     except OSError as error:
         raise ConfigError("unable to read configuration") from error
-    return PasswordService(SshTransport(config))
+    if app_config.backend is not BackendMode.REMOTE or app_config.remote is None:
+        raise ConfigError("local vault support is not available in this build")
+    return PasswordService(SshTransport(app_config.remote))
 
 
 def create_clipboard() -> Clipboard:
@@ -112,7 +114,7 @@ def _runtime(ctx: typer.Context, config_path: Path, plain: bool, debug: bool) ->
     return ctx.obj
 
 
-def _service(runtime: _Runtime) -> PasswordService:
+def _service(runtime: _Runtime) -> CredentialService:
     if runtime.service is None:
         runtime.service = create_service(runtime.config_path)
     return runtime.service
@@ -456,7 +458,10 @@ def guided_setup(ctx: typer.Context) -> None:
             if result.health.get("integrity_check") != "ok":
                 raise SetupError("health_failed", "The remote vault failed its health check")
         with prompts.status("Saving local configuration"):
-            save_config(runtime.config_path, config)
+            save_config(
+                runtime.config_path,
+                AppConfig(BackendMode.REMOTE, config),
+            )
     except prompts.PromptCancelled:
         _cancelled()
     except (ConfigError, SetupError, OSError) as error:
