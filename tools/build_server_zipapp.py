@@ -62,7 +62,11 @@ def _copy_package(staging_dir: Path) -> None:
         target_path = staging_dir / relative_path
         target_path.parent.mkdir(parents=True, exist_ok=True)
         _normalize_timestamp(target_path.parent)
-        shutil.copyfile(source_path, target_path)
+        target_path.write_text(
+            source_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+            newline="\n",
+        )
         _normalize_timestamp(target_path)
     _normalize_timestamp(staging_dir / SOURCE_PACKAGE.name)
 

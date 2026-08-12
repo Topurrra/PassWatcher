@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,14 @@ import pytest
 PROJECT_ROOT = Path(__file__).parents[2]
 BUILD_SCRIPT = PROJECT_ROOT / "tools" / "build_server_zipapp.py"
 ZIPAPP_PATH = PROJECT_ROOT / "src" / "passwatcher" / "assets" / "passwatcher-server.pyz"
+
+
+def _load_zipapp_builder():
+    spec = importlib.util.spec_from_file_location("passwatcher_zipapp_builder", BUILD_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture
@@ -143,6 +152,33 @@ def test_built_zipapp_is_reproducible_and_runs_without_project_dependencies(tmp_
             "passwatcher_server/rpc.py",
         ]
         assert {entry.date_time for entry in archive.infolist()} == {(1980, 1, 1, 0, 0, 0)}
+
+
+def test_zipapp_digest_is_independent_of_checked_out_line_endings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    builder = _load_zipapp_builder()
+    digests: list[str] = []
+
+    for name, newline in (("lf", "\n"), ("crlf", "\r\n")):
+        project_root = tmp_path / name
+        source_package = project_root / "src" / "passwatcher_server"
+        source_package.mkdir(parents=True)
+        source_package.joinpath("__init__.py").write_bytes(
+            f"VALUE = 1{newline}".encode("utf-8")
+        )
+        source_package.joinpath("__main__.py").write_bytes(
+            f"def main():{newline}    return 0{newline}".encode("utf-8")
+        )
+        output_path = project_root / "server.pyz"
+        monkeypatch.setattr(builder, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(builder, "SOURCE_PACKAGE", source_package)
+        monkeypatch.setattr(builder, "OUTPUT_PATH", output_path)
+
+        assert builder.main() == 0
+        digests.append(hashlib.sha256(output_path.read_bytes()).hexdigest())
+
+    assert digests[0] == digests[1]
 
 
 def test_server_bundle_is_declared_as_installed_package_data() -> None:
