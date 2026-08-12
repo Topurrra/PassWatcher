@@ -127,3 +127,13 @@ powershell -ExecutionPolicy Bypass -File tests/setup/windows-installer-smoke.ps1
 ```
 
 The smoke test refuses an existing Passwatcher installation or config directory. It installs twice, resolves `pw --help` through a fresh process and the user `PATH`, verifies configuration preservation, silently uninstalls with configuration retention, checks cleanup, and removes only the sentinel config directory that it created.
+
+The destructive-option safety smoke has a second explicit guard. In the same disposable user or CI worker, run:
+
+```powershell
+$env:PASSWATCHER_SMOKE_ISOLATED_USER = "1"
+$env:PASSWATCHER_SMOKE_DESTRUCTIVE_CANARIES = "1"
+powershell -ExecutionPolicy Bypass -File tests/setup/windows-installer-safety-smoke.ps1 -Installer "dist/Passwatcher-Setup-*.exe"
+```
+
+It creates uniquely named canaries only beneath the current user's temporary directory, verifies installer and uninstaller `/D=` plus uninstaller `_?=` cannot redirect Passwatcher cleanup, confirms unexpected install-directory files survive upgrades and uninstall, and exercises owned versus pre-existing user `PATH` entries. It refuses any existing Passwatcher installation, installer registry state, or exact user `PATH` entry before making changes.

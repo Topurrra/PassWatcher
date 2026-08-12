@@ -13,12 +13,35 @@ SetCompressor /SOLID lzma
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Passwatcher"
 !define BUILD_DIR "${__FILEDIR__}\..\dist\passwatcher"
 !define PATH_HELPER "${__FILEDIR__}\update_user_path.ps1"
+!define INSTALL_DIR "$LOCALAPPDATA\Programs\Passwatcher"
 
 Name "${PRODUCT_NAME} ${VERSION}"
 OutFile "${__FILEDIR__}\..\dist\Passwatcher-Setup-${VERSION}.exe"
-InstallDir "$LOCALAPPDATA\Programs\Passwatcher"
+InstallDir "${INSTALL_DIR}"
 ShowInstDetails show
 ShowUninstDetails show
+
+; Runtime /D= and _?= switches may initialize $INSTDIR to an arbitrary path.
+; Ignore those overrides and require the one per-user target before any mutation.
+Function .onInit
+  SetShellVarContext current
+  StrCmp $INSTDIR "${INSTALL_DIR}" installer_target_ready
+  StrCpy $INSTDIR "${INSTALL_DIR}"
+  StrCmp $INSTDIR "${INSTALL_DIR}" installer_target_ready
+  MessageBox MB_OK|MB_ICONSTOP "Passwatcher could not validate its per-user install directory."
+  Abort
+installer_target_ready:
+FunctionEnd
+
+Function un.onInit
+  SetShellVarContext current
+  StrCmp $INSTDIR "${INSTALL_DIR}" uninstaller_target_ready
+  StrCpy $INSTDIR "${INSTALL_DIR}"
+  StrCmp $INSTDIR "${INSTALL_DIR}" uninstaller_target_ready
+  MessageBox MB_OK|MB_ICONSTOP "Passwatcher could not validate its per-user install directory."
+  Abort
+uninstaller_target_ready:
+FunctionEnd
 
 Function BroadcastEnvironmentChange
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
@@ -58,9 +81,12 @@ Section "Passwatcher" SEC_PASSWATCHER
   SetShellVarContext current
   SetOverwrite on
 
-  ; The installation directory contains application-owned runtime files only.
-  ; Removing it first prevents stale PyInstaller files from surviving upgrades.
-  RMDir /r "$INSTDIR"
+  ; Replace only Passwatcher-owned artifacts. Unexpected files keep the root
+  ; directory non-empty and therefore survive both upgrades and uninstall.
+  Delete "$INSTDIR\pw.exe"
+  Delete "$INSTDIR\uninstall.exe"
+  RMDir /r "$INSTDIR\_internal"
+  RMDir "$INSTDIR"
   SetOutPath "$INSTDIR"
   File /r "${BUILD_DIR}\*.*"
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -85,10 +111,31 @@ SectionEnd
 Section "Uninstall"
   SetShellVarContext current
   Call un.RemoveFromUserPath
+  ; /ifempty considers subkeys but not values, so enumerate values first to
+  ; preserve unrelated current-user state that Passwatcher does not own.
+  ClearErrors
+  EnumRegValue $0 HKCU "Software\Passwatcher\Installer" 0
+  IfErrors installer_state_has_no_values
+  Goto installer_state_cleanup_done
+installer_state_has_no_values:
+  DeleteRegKey /ifempty HKCU "Software\Passwatcher\Installer\"
+installer_state_cleanup_done:
+  ClearErrors
+  EnumRegValue $0 HKCU "Software\Passwatcher" 0
+  IfErrors product_state_has_no_values
+  Goto product_state_cleanup_done
+product_state_has_no_values:
+  DeleteRegKey /ifempty HKCU "Software\Passwatcher\"
+product_state_cleanup_done:
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
-  RMDir /r "$INSTDIR"
+  SetOutPath "$TEMP"
+  Delete "$INSTDIR\pw.exe"
+  Delete "$INSTDIR\uninstall.exe"
+  RMDir /r "$INSTDIR\_internal"
+  RMDir "$INSTDIR"
 
   MessageBox MB_YESNO|MB_ICONQUESTION "Remove local Passwatcher connection settings too?" /SD IDNO IDNO keep_config
-    RMDir /r "$APPDATA\Passwatcher"
+    Delete "$APPDATA\Passwatcher\config.toml"
+    RMDir "$APPDATA\Passwatcher"
 keep_config:
 SectionEnd

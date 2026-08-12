@@ -25,8 +25,8 @@ $configDirectory = Join-Path $appData "Passwatcher"
 $installDirectory = Join-Path $localAppData "Programs\Passwatcher"
 $uninstaller = Join-Path $installDirectory "uninstall.exe"
 $uninstallSubKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\Passwatcher"
+$installerProductSubKey = "Software\Passwatcher"
 $installerStateSubKey = "Software\Passwatcher\Installer"
-$installerStateValueName = "PathValueExistedBeforeInstall"
 $sentinel = "passwatcher-smoke-$([Guid]::NewGuid().ToString('N'))"
 $createdConfig = $false
 
@@ -120,43 +120,9 @@ function Test-RegistrySubKeyExists {
     return $true
 }
 
-function Test-InstallerStateValueExists {
-    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($installerStateSubKey, $false)
-    try {
-        if ($null -eq $key) {
-            return $false
-        }
-        foreach ($valueName in $key.GetValueNames()) {
-            if ([string]::Equals(
-                $valueName,
-                $installerStateValueName,
-                [StringComparison]::OrdinalIgnoreCase
-            )) {
-                return $true
-            }
-        }
-        return $false
-    }
-    finally {
-        if ($null -ne $key) {
-            $key.Dispose()
-        }
-    }
-}
-
 function Remove-SmokeRegistryMutations {
     [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($uninstallSubKey, $false)
-    $stateKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($installerStateSubKey, $true)
-    try {
-        if ($null -ne $stateKey) {
-            $stateKey.DeleteValue($installerStateValueName, $false)
-        }
-    }
-    finally {
-        if ($null -ne $stateKey) {
-            $stateKey.Dispose()
-        }
-    }
+    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($installerProductSubKey, $false)
 }
 
 function Get-InstallPathEntryCount {
@@ -182,8 +148,8 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 if (Test-RegistrySubKeyExists -SubKey $uninstallSubKey) {
     throw "Refusing to overwrite existing Passwatcher uninstall metadata: HKCU\$uninstallSubKey"
 }
-if (Test-InstallerStateValueExists) {
-    throw "Refusing to overwrite existing Passwatcher installer state: HKCU\$installerStateSubKey\$installerStateValueName"
+if (Test-RegistrySubKeyExists -SubKey $installerProductSubKey) {
+    throw "Refusing to overwrite existing Passwatcher installer state: HKCU\$installerProductSubKey"
 }
 
 $originalUserPath = Get-UserPathState
@@ -227,8 +193,11 @@ try {
     if (Test-RegistrySubKeyExists -SubKey $uninstallSubKey) {
         throw "Uninstall left its HKCU uninstall metadata behind."
     }
-    if (Test-InstallerStateValueExists) {
-        throw "Uninstall left its PATH provenance value behind."
+    if (Test-RegistrySubKeyExists -SubKey $installerStateSubKey) {
+        throw "Uninstall left its installer state key behind."
+    }
+    if (Test-RegistrySubKeyExists -SubKey $installerProductSubKey) {
+        throw "Uninstall left its empty Passwatcher registry key behind."
     }
     if (-not (Test-Path -LiteralPath (Join-Path $configDirectory "config.toml") -PathType Leaf)) {
         throw "Silent uninstall did not retain the sentinel configuration."
@@ -259,7 +228,7 @@ finally {
         -RegistryAction {
             if (
                 (Test-RegistrySubKeyExists -SubKey $uninstallSubKey) -or
-                (Test-InstallerStateValueExists)
+                (Test-RegistrySubKeyExists -SubKey $installerProductSubKey)
             ) {
                 Remove-SmokeRegistryMutations
             }

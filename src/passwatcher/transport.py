@@ -32,7 +32,6 @@ class SshTransport:
             completed = subprocess.run(
                 self._command(),
                 input=raw,
-                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 timeout=self._timeout_seconds,

@@ -1,5 +1,6 @@
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -10,6 +11,22 @@ from passwatcher.transport import SshTransport, TransportError
 @pytest.fixture
 def config() -> ClientConfig:
     return ClientConfig("vault.example", "nika", 2222, Path("C:/keys/vault"))
+
+
+def test_transport_streams_request_through_real_subprocess(config: ClientConfig) -> None:
+    """The subprocess boundary must accept and transmit the request bytes."""
+
+    class LocalEchoTransport(SshTransport):
+        def _command(self) -> list[str]:
+            return [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())",
+            ]
+
+    raw = b'{"password":"real-subprocess-boundary"}'
+
+    assert LocalEchoTransport(config).request(raw) == raw
 
 
 def test_transport_uses_fixed_remote_command_and_json_stdin(
@@ -42,7 +59,6 @@ def test_transport_uses_fixed_remote_command_and_json_stdin(
     assert "a b;$(bad)" not in seen["argv"]
     assert seen["kwargs"] == {
         "input": raw,
-        "stdin": subprocess.PIPE,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.DEVNULL,
         "timeout": 15.0,
