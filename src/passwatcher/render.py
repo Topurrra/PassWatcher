@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -12,7 +13,8 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from .service import CredentialRecord
+from .csv_import import CsvFormat, CsvIssue, ImportPreview
+from .service import CredentialRecord, ImportSummary
 
 
 BACKGROUND = "#090d14"
@@ -94,6 +96,100 @@ class Renderer:
 
     def not_found(self) -> None:
         self._print_plain("No credentials found. Try a different service, label, or username.")
+
+    def import_preview(self, preview: ImportPreview) -> None:
+        """Render one non-secret import plan."""
+        if self.plain:
+            lines = [
+                "Import preview",
+                f"Format: {preview.format.value}",
+                f"Total: {preview.total}",
+                f"Insert: {preview.inserted}",
+                f"Update: {preview.updated}",
+                f"Skip: {preview.skipped}",
+            ]
+            if preview.ignored_columns:
+                lines.append(f"Ignored columns: {', '.join(preview.ignored_columns)}")
+            for line in lines:
+                self._print_plain(line)
+            return
+
+        table = Table(
+            title="[cyan]Import preview[/cyan]",
+            border_style="violet",
+            header_style="cyan",
+        )
+        table.add_column("Item")
+        table.add_column("Value", justify="right")
+        for label, value in (
+            ("Format", preview.format.value),
+            ("Total", str(preview.total)),
+            ("Insert", str(preview.inserted)),
+            ("Update", str(preview.updated)),
+            ("Skip", str(preview.skipped)),
+        ):
+            table.add_row(label, value)
+        self._console().print(table)
+        if preview.ignored_columns:
+            self._console().print(
+                f"[muted]Ignored columns: {', '.join(preview.ignored_columns)}[/muted]"
+            )
+
+    def import_errors(self, issues: Sequence[CsvIssue]) -> None:
+        """Render validation locations without rendering their source values."""
+        if self.plain:
+            self._print_plain("Import validation failed")
+            for issue in issues:
+                location = f"Row {issue.row}" if issue.row is not None else "Header"
+                self._print_plain(f"{location} | {issue.field} | {issue.message}")
+            return
+
+        table = Table(
+            title="[red]Import validation failed[/red]",
+            border_style="red",
+            header_style="cyan",
+        )
+        table.add_column("Location")
+        table.add_column("Field")
+        table.add_column("Problem")
+        for issue in issues:
+            location = f"Row {issue.row}" if issue.row is not None else "Header"
+            table.add_row(location, issue.field, issue.message)
+        self._console().print(table)
+
+    def export_warning(self, path: Path, format: CsvFormat) -> None:
+        """Warn before creating a portable plaintext credential file."""
+        lines = [
+            f"Warning: {format.value} CSV export is plaintext: {path}",
+            "Anyone who can read the file can read every password.",
+            "Spreadsheet software may interpret password-like values as formulas.",
+            "Delete or secure the file immediately after use.",
+        ]
+        if self.plain:
+            for line in lines:
+                self._print_plain(line)
+            return
+        for line in lines:
+            self._console().print(f"[red]{line}[/red]")
+
+    def import_complete(self, summary: ImportSummary) -> None:
+        """Render non-secret committed import counts."""
+        message = (
+            f"Import complete: {summary.inserted} inserted, "
+            f"{summary.updated} updated, {summary.skipped} skipped."
+        )
+        if self.plain:
+            self._print_plain(message)
+        else:
+            self._console().print(f"[green]{message}[/green]")
+
+    def export_complete(self, count: int, path: Path, format: CsvFormat) -> None:
+        """Render a non-secret local export summary."""
+        message = f"Export complete: {count} records in {format.value} format at {path}."
+        if self.plain:
+            self._print_plain(message)
+        else:
+            self._console().print(f"[green]{message}[/green]")
 
     def error(self, message: str, *, debug: str | None = None) -> None:
         if self.plain:
