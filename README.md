@@ -1,6 +1,6 @@
 # Passwatcher
 
-Passwatcher is a single-user Windows password-manager CLI backed by one vault on a Linux server you own. The Windows client reaches the vault through your existing OpenSSH login. It does not run an HTTP service or store credential records on Windows.
+Passwatcher is a single-user Windows password-manager CLI backed by one vault on a Linux server you own. The Windows client reaches the vault through your existing OpenSSH login. It does not run an HTTP service or cache credential records on Windows; only an explicit CSV export writes credentials locally.
 
 ## Install on Windows
 
@@ -49,6 +49,8 @@ pw add
 pw add --service github.com --label personal --username nika@example.com --password "typed-secret" --notes "main account"
 ```
 
+Label and notes are genuinely optional: press Enter to leave them empty. During `pw edit`, Enter keeps an existing value and `/clear` removes an existing label or note.
+
 Edit and delete search first. If several records match, choose from the numbered list. Both operations ask for confirmation; delete defaults to no.
 
 ```powershell
@@ -64,6 +66,34 @@ pw generate
 pw generate --length 32
 pw generate --length 20 --no-symbols
 ```
+
+## CSV import and export
+
+Preview a browser or Passwatcher CSV, then import it atomically:
+
+```powershell
+pw import chrome-passwords.csv -n
+pw import chrome-passwords.csv -d skip
+pw import updated-passwords.csv -d update
+```
+
+`-n, --dry-run` validates and previews without changing the vault. `-d, --duplicates` accepts `skip` (the default), `update`, or `error`. `-y, --yes` skips only the final confirmation; validation, backup, and transactional behavior still apply.
+
+Passwatcher CSV requires `service`, `username`, and `password`; `label` and `notes` are optional. Browser CSV requires `url`, `username`, and `password`; `name` and `note` are optional. Header matching is case-insensitive, common extra browser columns are ignored, and empty optional cells are valid. Duplicate identity is the case-insensitive combination of service/URL, label/name, and username.
+
+Every import is fully parsed and validated on Windows before mutation. A mutating import sends one bounded request over SSH, creates an owner-only server backup, and commits in one SQLite transaction. A validation, conflict, backup, or database failure imports nothing. The CSV file itself is never uploaded to or retained on the Linux server.
+
+Export a lossless Passwatcher CSV or a browser migration CSV:
+
+```powershell
+pw export passwatcher-backup.csv
+pw export browser-passwords.csv -t browser
+pw export passwatcher-backup.csv -f -y
+```
+
+`-t, --format` accepts `passwatcher` (the default) or `browser`. `-f, --force` permits replacement of an existing regular file, and `-y, --yes` acknowledges the plaintext warning without prompting. Passwatcher format writes `service,label,username,password,notes` and supports exact round trips. Browser format writes `name,url,username,password,note` and is intended for migration rather than lossless backup.
+
+**CSV exports are unencrypted plaintext.** Anyone who can read the file can read every password. Do not upload or email it, secure or delete it immediately after use, and remember that spreadsheet software may interpret password-like values as formulas. Passwatcher preserves credential values exactly instead of rewriting them for spreadsheet safety. Exports use a temporary file and atomic replacement so an interrupted write does not leave a partial destination.
 
 Run read-only diagnostics whenever setup or a command fails:
 
@@ -109,7 +139,7 @@ Start with `pw doctor`. It checks the local configuration, `ssh`/`scp`, connecti
 
 Passwatcher is for one person using a Linux server and account they own and control. Credential records are plaintext inside a permissions-protected SQLite database on that server. There is no server-side encryption. Anyone who can read the database as that Linux user (including a sufficiently privileged administrator or a compromised account) can read every credential.
 
-SSH encrypts credentials in transit. Secrets are sent in JSON on SSH standard input, never in shell command arguments. Windows stores only SSH connection settings; it does not cache vault records. Use a dedicated, strongly protected Linux account, SSH keys with appropriate filesystem permissions, trusted endpoint devices, and server backups appropriate for plaintext secrets. If you do not accept plaintext storage on an owned server, do not use Passwatcher.
+SSH encrypts credentials in transit. Secrets are sent in JSON on SSH standard input, never in shell command arguments. Windows stores only SSH connection settings unless you deliberately create a plaintext CSV export; it does not cache vault records. Use a dedicated, strongly protected Linux account, SSH keys with appropriate filesystem permissions, trusted endpoint devices, and server backups appropriate for plaintext secrets. If you do not accept plaintext storage on an owned server, do not use Passwatcher.
 
 ## Build a Windows release
 
