@@ -221,6 +221,26 @@ class Vault:
             "permissions_ok": self._permissions_ok(),
         }
 
+    def backup(self) -> Path:
+        """Create and return one owner-only online backup of the current vault."""
+        self.initialize()
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key = 'schema_version'"
+            ).fetchone()
+            if row is None:
+                raise DatabaseError("The vault schema version is invalid")
+            try:
+                version = int(row["value"])
+            except (TypeError, ValueError) as error:
+                raise DatabaseError("The vault schema version is invalid") from error
+            return self._backup_before_migration(connection, version)
+        except sqlite3.Error as error:
+            raise DatabaseError("The vault backup could not be created") from error
+        finally:
+            self._secure_and_close(connection)
+
     def _connect(self) -> sqlite3.Connection:
         try:
             connection = sqlite3.connect(self.path)

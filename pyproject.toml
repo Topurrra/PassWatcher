@@ -26,6 +26,9 @@ pw = "passwatcher.cli:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+passwatcher = ["assets/passwatcher-server.pyz"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

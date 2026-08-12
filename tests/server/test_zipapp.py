@@ -64,6 +64,48 @@ def test_rpc_process_accepts_only_rpc(
     assert completed.stdout == ""
 
 
+def test_server_backup_command_copies_the_existing_vault(
+    server_command: list[str], source_environment: dict[str, str], tmp_path: Path
+) -> None:
+    """Catches setup upgrades calling a backup command the installed server lacks."""
+    create_request = json.dumps(
+        {
+            "protocol_version": 1,
+            "operation": "create",
+            "payload": {
+                "service": "github.com",
+                "label": "work",
+                "username": "nika",
+                "password": "secret",
+                "notes": "",
+            },
+        }
+    )
+    created = subprocess.run(
+        server_command + ["rpc"],
+        input=create_request,
+        text=True,
+        capture_output=True,
+        env=source_environment,
+        check=False,
+    )
+
+    backed_up = subprocess.run(
+        server_command + ["backup"],
+        text=True,
+        capture_output=True,
+        env=source_environment,
+        check=False,
+    )
+
+    assert created.returncode == 0
+    assert backed_up.returncode == 0
+    assert backed_up.stdout == "" and backed_up.stderr == ""
+    backups = list(tmp_path.joinpath("backups").glob("passwatcher-*-v1.db"))
+    assert len(backups) == 1
+    assert tmp_path.joinpath("passwatcher.db").exists()
+
+
 def test_built_zipapp_is_reproducible_and_runs_without_project_dependencies(tmp_path: Path) -> None:
     first_build = subprocess.run(
         [sys.executable, str(BUILD_SCRIPT)], text=True, capture_output=True, check=False
@@ -101,3 +143,15 @@ def test_built_zipapp_is_reproducible_and_runs_without_project_dependencies(tmp_
             "passwatcher_server/rpc.py",
         ]
         assert {entry.date_time for entry in archive.infolist()} == {(1980, 1, 1, 0, 0, 0)}
+
+
+def test_server_bundle_is_declared_as_installed_package_data() -> None:
+    """Catches installed clients losing the embedded server required by setup."""
+    import tomllib
+
+    with PROJECT_ROOT.joinpath("pyproject.toml").open("rb") as project_file:
+        project = tomllib.load(project_file)
+
+    assert project["tool"]["setuptools"]["package-data"]["passwatcher"] == [
+        "assets/passwatcher-server.pyz"
+    ]

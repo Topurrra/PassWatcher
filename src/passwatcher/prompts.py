@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from collections.abc import Iterator
+
 import typer
+from rich.console import Console
 
 from .service import CredentialRecord
 
@@ -25,6 +29,13 @@ def confirm(label: str, *, default: bool = False) -> bool:
         return typer.confirm(label, default=default)
     except (typer.Abort, EOFError, KeyboardInterrupt) as error:
         raise PromptCancelled from error
+
+
+@contextmanager
+def status(label: str) -> Iterator[None]:
+    """Display one non-secret progress spinner around a bounded operation."""
+    with Console(stderr=True).status(label):
+        yield
 
 
 def select_record(records: list[CredentialRecord]) -> CredentialRecord | None:

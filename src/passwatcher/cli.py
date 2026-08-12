@@ -11,12 +11,13 @@ from platformdirs import user_config_dir
 from typer.core import TyperGroup
 
 from .clipboard import Clipboard
-from .config import ConfigError, load_config
+from .config import ClientConfig, ConfigError, load_config, save_config
 from .passwords import PasswordPolicyError, generate_password
 from .protocol import ProtocolError
 from . import prompts
 from .render import Renderer
 from .service import CredentialRecord, PasswordService
+from .setup import Doctor, SetupError, SetupManager, SubprocessSetupRunner
 from .transport import SshTransport, TransportError
 
 
@@ -83,6 +84,17 @@ def create_service(config_path: Path) -> PasswordService:
 def create_clipboard() -> Clipboard:
     """Build the production clipboard; tests replace this narrow construction seam."""
     return Clipboard()
+
+
+def create_setup_manager() -> SetupManager:
+    """Build the production guided-setup workflow."""
+    bundle = Path(__file__).with_name("assets") / "passwatcher-server.pyz"
+    return SetupManager(SubprocessSetupRunner(), bundle)
+
+
+def create_doctor() -> Doctor:
+    """Build the production read-only diagnostic workflow."""
+    return Doctor(SubprocessSetupRunner())
 
 
 def _runtime(ctx: typer.Context, config_path: Path, plain: bool, debug: bool) -> _Runtime:
@@ -286,6 +298,67 @@ def _generate(
         raise typer.BadParameter(str(error), param_hint="--length") from None
     typer.echo(password)
     runtime.clipboard.copy(password)
+
+
+@app.command("setup")
+def guided_setup(ctx: typer.Context) -> None:
+    """Connect this device to the one shared Linux vault."""
+    runtime: _Runtime = ctx.obj
+    manager = create_setup_manager()
+    try:
+        host = prompts.text("SSH host").strip()
+        user = prompts.text("SSH user").strip()
+        raw_port = prompts.text("SSH port", default="22").strip()
+        identity = prompts.text("Identity file (optional)").strip()
+        try:
+            port = int(raw_port)
+        except ValueError:
+            raise ConfigError("port must be an integer") from None
+        config = ClientConfig(host, user, port, Path(identity) if identity else None)
+
+        typer.echo(f"Target: {config.user}@{config.host}:{config.port}")
+        if not prompts.confirm("Use this vault?", default=False):
+            _cancelled()
+            return
+
+        with prompts.status("Checking connectivity"):
+            connectivity = getattr(manager.runner, "connectivity", None)
+            if connectivity is not None:
+                connectivity(config)
+        with prompts.status("Inspecting remote vault"):
+            state = manager.inspect(config)
+
+        with prompts.status("Installing, upgrading, or reusing server"):
+            result = manager.install_or_upgrade(config, state)
+        with prompts.status("Verifying remote health"):
+            if result.health.get("integrity_check") != "ok":
+                raise SetupError("health_failed", "The remote vault failed its health check")
+        with prompts.status("Saving local configuration"):
+            save_config(runtime.config_path, config)
+    except prompts.PromptCancelled:
+        _cancelled()
+    except (ConfigError, SetupError, OSError) as error:
+        if isinstance(error, SetupError):
+            message = error.message
+        elif isinstance(error, ConfigError):
+            message = str(error)
+        else:
+            message = "The local configuration could not be saved"
+        runtime.renderer.error(message)
+        raise typer.Exit(1) from None
+    else:
+        typer.echo(f"Setup complete ({result.action}).")
+
+
+@app.command("doctor")
+def doctor(ctx: typer.Context) -> None:
+    """Report local and remote health without changing vault state."""
+    runtime: _Runtime = ctx.obj
+    checks = create_doctor().run(runtime.config_path)
+    for name, passed, detail in checks:
+        typer.echo(f"{'PASS' if passed else 'FAIL'}  {name}: {detail}")
+    if not all(passed for _name, passed, _detail in checks):
+        raise typer.Exit(1)
 
 
 def _dispatch_command(runtime: _Runtime, arguments: list[str]) -> None:
