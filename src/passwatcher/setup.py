@@ -9,10 +9,13 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+import sys
 from typing import Protocol
 
 from .config import BackendMode, ClientConfig, ConfigError, load_config
 from .protocol import PROTOCOL_VERSION, make_request, parse_response
+from .local_crypto import DpapiProtector, ProtectionError
+from .local_vault import LocalPasswordService, LocalVaultError
 
 
 SCHEMA_VERSION = 1
@@ -331,6 +334,58 @@ class SubprocessSetupRunner:
 
 
 DoctorCheck = tuple[str, bool, str]
+
+
+class LocalDoctor:
+    """Report local DPAPI and SQLite state without creating a missing vault."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = Path(path)
+
+    def run(self) -> list[DoctorCheck]:
+        windows = sys.platform == "win32"
+        checks: list[DoctorCheck] = [
+            ("Windows", windows, "available" if windows else "required")
+        ]
+        exists = self._path.is_file()
+        checks.append(("Local vault", exists, "available" if exists else "missing"))
+        if not windows or not exists:
+            checks.extend(
+                [
+                    ("SQLite integrity", False, "unavailable"),
+                    ("DPAPI", False, "unavailable"),
+                    ("Record count", False, "unavailable"),
+                    ("Backups", self._path.parent.exists(), "unavailable"),
+                ]
+            )
+            return checks
+        try:
+            health = LocalPasswordService(self._path, DpapiProtector()).health()
+        except (LocalVaultError, ProtectionError) as error:
+            checks.extend(
+                [
+                    ("SQLite integrity", False, error.code),
+                    ("DPAPI", False, error.code),
+                    ("Record count", False, "unavailable"),
+                ]
+            )
+        else:
+            checks.extend(
+                [
+                    (
+                        "SQLite integrity",
+                        health.get("integrity_check") == "ok",
+                        str(health.get("integrity_check", "unavailable")),
+                    ),
+                    ("DPAPI", True, "current-user protection available"),
+                    ("Record count", True, str(health.get("record_count", 0))),
+                ]
+            )
+        backup_dir = self._path.parent / "backups"
+        checks.append(
+            ("Backups", True, "available" if backup_dir.is_dir() else "not created")
+        )
+        return checks
 
 
 class Doctor:

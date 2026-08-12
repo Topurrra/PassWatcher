@@ -15,6 +15,7 @@ from rich.theme import Theme
 
 from .csv_import import CsvFormat, CsvIssue, ImportPreview
 from .service import CredentialRecord, ImportSummary
+from .migration import MigrationPlan
 
 
 BACKGROUND = "#090d14"
@@ -96,6 +97,71 @@ class Renderer:
 
     def not_found(self) -> None:
         self._print_plain("No credentials found. Try a different service, label, or username.")
+
+    def setup_choices(self) -> None:
+        """Show setup commands without causing either backend to be constructed."""
+        lines = [
+            "Choose a vault setup mode:",
+            "pw setup --local   Store a DPAPI-protected vault on this Windows device",
+            "pw setup --remote  Use a vault on a Linux server through SSH",
+        ]
+        if self.plain:
+            for line in lines:
+                self._print_plain(line)
+            return
+        self._console().print(
+            Panel(
+                Group(
+                    Text(lines[1], style="cyan"),
+                    Text(lines[2], style="violet"),
+                ),
+                title="[cyan]Choose a vault setup mode[/cyan]",
+                border_style="violet",
+                expand=False,
+            )
+        )
+
+    def migration_preview(
+        self, plan: MigrationPlan, *, source: str, destination: str
+    ) -> None:
+        """Render migration counts without rendering private plan records."""
+        lines = [
+            f"Migration preview: {source} -> {destination}",
+            f"Source only: {plan.source_only}",
+            f"Identical: {plan.identical}",
+            f"Conflicts: {plan.conflicts}",
+            f"Destination only: {plan.destination_only}",
+        ]
+        if self.plain:
+            for line in lines:
+                self._print_plain(line)
+            return
+        table = Table(
+            title=f"[cyan]Migration: {source} → {destination}[/cyan]",
+            border_style="violet",
+            header_style="cyan",
+        )
+        table.add_column("Item")
+        table.add_column("Count", justify="right")
+        for label, value in (
+            ("Source only", plan.source_only),
+            ("Identical", plan.identical),
+            ("Conflicts", plan.conflicts),
+            ("Destination only", plan.destination_only),
+        ):
+            table.add_row(label, str(value))
+        self._console().print(table)
+
+    def migration_complete(self, summary: ImportSummary) -> None:
+        """Render only committed migration counts."""
+        message = (
+            f"Migration complete: {summary.inserted} inserted, "
+            f"{summary.updated} updated, {summary.skipped} skipped."
+        )
+        if self.plain:
+            self._print_plain(message)
+        else:
+            self._console().print(f"[green]{message}[/green]")
 
     def import_preview(self, preview: ImportPreview) -> None:
         """Render one non-secret import plan."""

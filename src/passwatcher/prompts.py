@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 
 from .service import CredentialRecord
+from .migration import ConflictPolicy
 
 
 class PromptCancelled(Exception):
@@ -44,6 +45,19 @@ def confirm(label: str, *, default: bool = False) -> bool:
         return typer.confirm(label, default=default)
     except (typer.Abort, EOFError, KeyboardInterrupt) as error:
         raise PromptCancelled from error
+
+
+def migration_conflict_policy() -> ConflictPolicy | None:
+    """Ask for one safe policy covering every migration conflict."""
+    while True:
+        answer = text("Conflicts: source, destination, or cancel").strip().casefold()
+        if answer == "source":
+            return ConflictPolicy.SOURCE
+        if answer == "destination":
+            return ConflictPolicy.DESTINATION
+        if answer == "cancel":
+            return None
+        typer.echo("Enter source, destination, or cancel.")
 
 
 @contextmanager

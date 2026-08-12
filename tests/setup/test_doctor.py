@@ -79,6 +79,17 @@ class FakeDoctor:
         return self.checks
 
 
+class FakeLocalDoctor:
+    def __init__(self) -> None:
+        self.checks = [
+            ("DPAPI", True, "current-user protection available"),
+            ("SQLite integrity", True, "ok"),
+        ]
+
+    def run(self) -> list[tuple[str, bool, str]]:
+        return self.checks
+
+
 @pytest.fixture
 def cli() -> CliRunner:
     return CliRunner()
@@ -113,7 +124,7 @@ def test_setup_saves_config_only_after_remote_success(
 
     result = cli.invoke(
         app,
-        ["--config", str(config_path), "setup"],
+        ["--config", str(config_path), "setup", "--remote"],
         input="vault.example\nnika\n22\nC:/keys/vault\ny\n",
     )
 
@@ -129,7 +140,7 @@ def test_setup_persists_only_connection_fields_after_confirmed_health(
     """Catches setup saving secrets or skipping the healthy remote workflow."""
     result = cli.invoke(
         app,
-        ["--config", str(config_path), "setup"],
+        ["--config", str(config_path), "setup", "--remote"],
         input="vault.example\nnika\n2222\nC:/keys/vault\ny\n",
     )
 
@@ -150,7 +161,7 @@ def test_setup_accepts_empty_optional_identity_file(
     """Catches an optional identity prompt consuming the confirmation as a value."""
     result = cli.invoke(
         app,
-        ["--config", str(config_path), "setup"],
+        ["--config", str(config_path), "setup", "--remote"],
         input="vault.example\nnika\n22\n\ny\n",
     )
 
@@ -168,7 +179,7 @@ def test_setup_confirmation_precedes_any_remote_connection(
     """Catches an unconfirmed or mistyped target receiving an outbound SSH connection."""
     result = cli.invoke(
         app,
-        ["--config", str(config_path), "setup"],
+        ["--config", str(config_path), "setup", "--remote"],
         input="vault.example\nnika\n22\n\nn\n",
     )
 
@@ -201,6 +212,26 @@ def test_doctor_returns_failure_after_reporting_every_check(
 
     assert result.exit_code == 1
     assert "OpenSSH" in result.stdout and "SQLite integrity" in result.stdout
+
+
+def test_doctor_uses_local_checks_without_ssh(
+    cli: CliRunner,
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catches local mode constructing or reporting the remote SSH doctor."""
+    save_config(config_path, AppConfig(BackendMode.LOCAL))
+    local = FakeLocalDoctor()
+    monkeypatch.setattr(
+        cli_module, "create_doctor", lambda: pytest.fail("remote doctor used")
+    )
+    monkeypatch.setattr(cli_module, "create_local_doctor", lambda: local, raising=False)
+
+    result = cli.invoke(app, ["--config", str(config_path), "doctor"])
+
+    assert result.exit_code == 0
+    assert "DPAPI" in result.stdout and "SQLite integrity" in result.stdout
+    assert "OpenSSH" not in result.stdout
 
 
 def test_production_doctor_uses_only_non_mutating_runner_operations(

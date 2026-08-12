@@ -24,11 +24,17 @@ from .csv_import import (
 from .passwords import PasswordPolicyError, generate_password
 from .protocol import ProtocolError
 from . import prompts
-from .local_crypto import DpapiProtector
-from .local_vault import LocalPasswordService, default_local_vault_path
+from .local_crypto import DpapiProtector, ProtectionError
+from .local_vault import (
+    LocalPasswordService,
+    LocalVaultError,
+    default_local_vault_path,
+    delete_local_vault,
+)
+from .migration import MigrationError, execute_migration, plan_migration
 from .render import Renderer
 from .service import CredentialRecord, CredentialService, PasswordService
-from .setup import Doctor, SetupError, SetupManager, SubprocessSetupRunner
+from .setup import Doctor, LocalDoctor, SetupError, SetupManager, SubprocessSetupRunner
 from .transport import SshTransport, TransportError
 
 
@@ -101,6 +107,11 @@ def create_local_service() -> LocalPasswordService:
     return LocalPasswordService(default_local_vault_path(), DpapiProtector())
 
 
+def create_remote_service(config: ClientConfig) -> PasswordService:
+    """Build a remote service before its configuration becomes active."""
+    return PasswordService(SshTransport(config))
+
+
 def create_clipboard() -> Clipboard:
     """Build the production clipboard; tests replace this narrow construction seam."""
     return Clipboard()
@@ -115,6 +126,11 @@ def create_setup_manager() -> SetupManager:
 def create_doctor() -> Doctor:
     """Build the production read-only diagnostic workflow."""
     return Doctor(SubprocessSetupRunner())
+
+
+def create_local_doctor() -> LocalDoctor:
+    """Build read-only diagnostics for the fixed local vault path."""
+    return LocalDoctor(default_local_vault_path())
 
 
 def _runtime(ctx: typer.Context, config_path: Path, plain: bool, debug: bool) -> _Runtime:
@@ -153,7 +169,7 @@ def lookup(
         return
     try:
         matches = _service(runtime).search(" ".join(query))
-    except (ConfigError, TransportError, ProtocolError) as error:
+    except (ConfigError, TransportError, ProtocolError, LocalVaultError, ProtectionError) as error:
         _render_expected_error(runtime.renderer, runtime.debug, error)
         raise typer.Exit(1) from None
 
@@ -180,7 +196,7 @@ def list_credentials(
 def _list_records(runtime: _Runtime, *, secrets: bool) -> None:
     try:
         records = _service(runtime).list_all()
-    except (ConfigError, TransportError, ProtocolError) as error:
+    except (ConfigError, TransportError, ProtocolError, LocalVaultError, ProtectionError) as error:
         _render_expected_error(runtime.renderer, runtime.debug, error)
         raise typer.Exit(1) from None
     runtime.renderer.list_records(records, secrets=secrets)
@@ -235,7 +251,7 @@ def _import_credentials(
         else:
             runtime.renderer.error(error.message)
         raise typer.Exit(1) from None
-    except (ConfigError, TransportError, ProtocolError) as error:
+    except (ConfigError, TransportError, ProtocolError, LocalVaultError, ProtectionError) as error:
         if isinstance(error, ProtocolError) and error.code in {
             "incompatible_protocol",
             "unknown_operation",
@@ -289,7 +305,7 @@ def _export_credentials(
     except CsvExportError as error:
         runtime.renderer.error(error.message)
         raise typer.Exit(1) from None
-    except (ConfigError, TransportError, ProtocolError) as error:
+    except (ConfigError, TransportError, ProtocolError, LocalVaultError, ProtectionError) as error:
         _render_expected_error(runtime.renderer, runtime.debug, error)
         raise typer.Exit(1) from None
     runtime.renderer.export_complete(count, path, csv_format)
@@ -329,7 +345,7 @@ def _add(
         _service(runtime).create(service, label, username, password, notes)
     except prompts.PromptCancelled:
         _cancelled()
-    except (ConfigError, TransportError, ProtocolError) as error:
+    except (ConfigError, TransportError, ProtocolError, LocalVaultError, ProtectionError) as error:
         _render_expected_error(runtime.renderer, runtime.debug, error)
         raise typer.Exit(1) from None
     else:
@@ -377,7 +393,7 @@ def _edit(
         _service(runtime).update(record.id, service, label, username, password, notes)
     except prompts.PromptCancelled:
         _cancelled()
-    except (ConfigError, TransportError, ProtocolError) as error:
+    except (ConfigError, TransportError, ProtocolError, LocalVaultError, ProtectionError) as error:
         _render_expected_error(runtime.renderer, runtime.debug, error)
         raise typer.Exit(1) from None
     else:
@@ -401,7 +417,7 @@ def _delete(runtime: _Runtime, query: str) -> None:
         _service(runtime).delete(record.id)
     except prompts.PromptCancelled:
         _cancelled()
-    except (ConfigError, TransportError, ProtocolError) as error:
+    except (ConfigError, TransportError, ProtocolError, LocalVaultError, ProtectionError) as error:
         _render_expected_error(runtime.renderer, runtime.debug, error)
         raise typer.Exit(1) from None
     else:
@@ -434,15 +450,79 @@ def _generate(
 
 
 @app.command("setup")
-def guided_setup(ctx: typer.Context) -> None:
-    """Connect this device to the one shared Linux vault."""
+def guided_setup(
+    ctx: typer.Context,
+    local: Annotated[bool, typer.Option("-l", "--local")] = False,
+    remote: Annotated[bool, typer.Option("-r", "--remote")] = False,
+) -> None:
+    """Choose and configure a local or remote vault."""
     runtime: _Runtime = ctx.obj
+    if local and remote:
+        raise typer.BadParameter("Choose either --local or --remote, not both.")
+    if not local and not remote:
+        runtime.renderer.setup_choices()
+        return
+    if local:
+        _setup_local(runtime)
+    else:
+        _setup_remote(runtime)
+
+
+def _setup_local(runtime: _Runtime) -> None:
+    previous = _load_previous_config(runtime.config_path)
+    try:
+        with prompts.status("Opening local DPAPI vault"):
+            destination = create_local_service()
+        with prompts.status("Verifying local health"):
+            _require_healthy(destination.health(), "local")
+        if previous is not None and previous.backend is BackendMode.REMOTE:
+            assert previous.remote is not None
+            source = create_remote_service(previous.remote)
+            if not _migrate(
+                runtime,
+                source,
+                destination,
+                source_name="remote",
+                destination_name="local",
+            ):
+                _cancelled()
+                return
+            _require_healthy(destination.health(), "local")
+        save_config(
+            runtime.config_path,
+            AppConfig(BackendMode.LOCAL, previous.remote if previous else None),
+        )
+    except prompts.PromptCancelled:
+        _cancelled()
+    except (ConfigError, LocalVaultError, ProtectionError, MigrationError, TransportError, ProtocolError, OSError) as error:
+        _render_setup_error(runtime, error)
+        raise typer.Exit(1) from None
+    else:
+        typer.echo("Setup complete (local).")
+
+
+def _setup_remote(runtime: _Runtime) -> None:
+    previous = _load_previous_config(runtime.config_path)
+    remembered = previous.remote if previous is not None else None
     manager = create_setup_manager()
     try:
-        host = prompts.text("SSH host").strip()
-        user = prompts.text("SSH user").strip()
-        raw_port = prompts.text("SSH port", default="22").strip()
-        identity = prompts.optional_text("Identity file (optional)").strip()
+        host = prompts.text(
+            "SSH host", default=remembered.host if remembered else None
+        ).strip()
+        user = prompts.text(
+            "SSH user", default=remembered.user if remembered else None
+        ).strip()
+        raw_port = prompts.text(
+            "SSH port", default=str(remembered.port if remembered else 22)
+        ).strip()
+        remembered_identity = (
+            str(remembered.identity_file)
+            if remembered is not None and remembered.identity_file is not None
+            else None
+        )
+        identity = prompts.optional_text(
+            "Identity file (optional)", current=remembered_identity
+        ).strip()
         try:
             port = int(raw_port)
         except ValueError:
@@ -464,33 +544,102 @@ def guided_setup(ctx: typer.Context) -> None:
         with prompts.status("Installing, upgrading, or reusing server"):
             result = manager.install_or_upgrade(config, state)
         with prompts.status("Verifying remote health"):
-            if result.health.get("integrity_check") != "ok":
-                raise SetupError("health_failed", "The remote vault failed its health check")
+            _require_healthy(result.health, "remote")
+
+        migrating_local = (
+            previous is not None and previous.backend is BackendMode.LOCAL
+        ) or (previous is None and default_local_vault_path().is_file())
+        if migrating_local:
+            source = create_local_service()
+            destination = create_remote_service(config)
+            if not _migrate(
+                runtime,
+                source,
+                destination,
+                source_name="local",
+                destination_name="remote",
+            ):
+                _cancelled()
+                return
+            _require_healthy(destination.health(), "remote")
         with prompts.status("Saving local configuration"):
             save_config(
                 runtime.config_path,
                 AppConfig(BackendMode.REMOTE, config),
             )
+        if migrating_local and prompts.confirm(
+            "Delete the migrated local vault and backups?", default=False
+        ):
+            delete_local_vault(default_local_vault_path())
     except prompts.PromptCancelled:
         _cancelled()
-    except (ConfigError, SetupError, OSError) as error:
-        if isinstance(error, SetupError):
-            message = error.message
-        elif isinstance(error, ConfigError):
-            message = str(error)
-        else:
-            message = "The local configuration could not be saved"
-        runtime.renderer.error(message)
+    except (ConfigError, SetupError, LocalVaultError, ProtectionError, MigrationError, TransportError, ProtocolError, OSError) as error:
+        _render_setup_error(runtime, error)
         raise typer.Exit(1) from None
     else:
         typer.echo(f"Setup complete ({result.action}).")
 
 
+def _migrate(
+    runtime: _Runtime,
+    source: CredentialService,
+    destination: CredentialService,
+    *,
+    source_name: str,
+    destination_name: str,
+) -> bool:
+    """Plan and execute one backend switch without exposing record values."""
+    plan = plan_migration(source.list_all(), destination.list_all())
+    runtime.renderer.migration_preview(
+        plan, source=source_name, destination=destination_name
+    )
+    if plan.conflicts:
+        policy = prompts.migration_conflict_policy()
+        if policy is None:
+            return False
+    else:
+        from .migration import ConflictPolicy
+
+        policy = ConflictPolicy.DESTINATION
+    summary = execute_migration(destination, plan, policy)
+    runtime.renderer.migration_complete(summary)
+    return True
+
+
+def _load_previous_config(path: Path) -> AppConfig | None:
+    try:
+        return load_config(path)
+    except (ConfigError, OSError):
+        return None
+
+
+def _require_healthy(health: dict[str, object], backend: str) -> None:
+    if health.get("integrity_check") != "ok":
+        raise SetupError("health_failed", f"The {backend} vault failed its health check")
+
+
+def _render_setup_error(runtime: _Runtime, error: Exception) -> None:
+    if isinstance(error, (SetupError, LocalVaultError, ProtectionError, MigrationError)):
+        message = error.message
+    elif isinstance(error, ConfigError):
+        message = str(error)
+    elif isinstance(error, (TransportError, ProtocolError)):
+        _render_expected_error(runtime.renderer, runtime.debug, error)
+        return
+    else:
+        message = "The local configuration could not be saved"
+    runtime.renderer.error(message)
+
+
 @app.command("doctor")
 def doctor(ctx: typer.Context) -> None:
-    """Report local and remote health without changing vault state."""
+    """Report health for the active vault without repairing it."""
     runtime: _Runtime = ctx.obj
-    checks = create_doctor().run(runtime.config_path)
+    config = _load_previous_config(runtime.config_path)
+    if config is not None and config.backend is BackendMode.LOCAL:
+        checks = create_local_doctor().run()
+    else:
+        checks = create_doctor().run(runtime.config_path)
     for name, passed, detail in checks:
         typer.echo(f"{'PASS' if passed else 'FAIL'}  {name}: {detail}")
     if not all(passed for _name, passed, _detail in checks):
@@ -601,13 +750,16 @@ def _cancelled() -> None:
 def _render_expected_error(
     renderer: Renderer,
     debug_enabled: bool,
-    error: ConfigError | TransportError | ProtocolError,
+    error: ConfigError | TransportError | ProtocolError | LocalVaultError | ProtectionError,
 ) -> None:
     if isinstance(error, ConfigError):
         message = "Configuration problem. Run `pw setup` to update your connection settings."
         debug = type(error).__name__
     elif isinstance(error, TransportError):
         message = "Could not reach the vault. Check SSH connectivity and try again."
+        debug = f"{type(error).__name__} (code: {error.code})"
+    elif isinstance(error, (LocalVaultError, ProtectionError)):
+        message = "Could not use the local vault. Run `pw doctor` for safe diagnostics."
         debug = f"{type(error).__name__} (code: {error.code})"
     else:
         message = "The vault returned an unexpected response. Try again or run `pw doctor`."
