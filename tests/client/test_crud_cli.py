@@ -160,3 +160,38 @@ def test_generate_displays_and_copies_one_password(cli, clipboard):
     assert len(clipboard.values) == 1
     assert clipboard.values[0] in result.stdout
     assert len(clipboard.values[0]) == 12
+
+
+def test_global_plain_option_precedes_generate_help(cli):
+    """Catches root flags causing command help to be parsed as a lookup query."""
+    result = cli.invoke(app, ["--plain", "generate", "--help"])
+
+    assert result.exit_code == 0
+    assert "--length" in result.stdout
+
+
+def test_global_config_option_precedes_add(cli, service):
+    """Catches root options with values preventing the CRUD command from running."""
+    result = cli.invoke(
+        app,
+        [
+            "--config",
+            "test-config.toml",
+            "add",
+            "--service",
+            "github.com",
+            "--label",
+            "personal",
+            "--username",
+            "nika@example.com",
+            "--password",
+            "typed-secret",
+            "--notes",
+            "main account",
+        ],
+        input="y\n",
+    )
+
+    assert result.exit_code == 0
+    assert service.created is not None
+    assert service.created.service == "github.com"

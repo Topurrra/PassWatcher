@@ -24,10 +24,29 @@ class _PasswatcherGroup(TyperGroup):
     """Reserve known commands before the default lookup consumes positional words."""
 
     def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:
-        if args and args[0] in self.commands:
-            ctx._protected_args, ctx.args = args[:1], args[1:]
+        command_index = self._command_index(args)
+        if command_index is not None:
+            super().parse_args(ctx, args[:command_index])
+            ctx._protected_args = args[command_index : command_index + 1]
+            ctx.args = args[command_index + 1 :]
             return ctx.args
         return super().parse_args(ctx, args)
+
+    def _command_index(self, args: list[str]) -> int | None:
+        """Locate a command after any root-level options and their values."""
+        index = 0
+        while index < len(args):
+            argument = args[index]
+            if argument in self.commands:
+                return index
+            if argument in {"--plain", "--debug"} or argument.startswith("--config="):
+                index += 1
+                continue
+            if argument == "--config":
+                index += 2
+                continue
+            return None
+        return None
 
 
 app = typer.Typer(
