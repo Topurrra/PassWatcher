@@ -86,6 +86,42 @@ def test_smoke_script_requires_disposable_context_and_refuses_existing_config() 
     assert "$partialUninstall.ExitCode" in text
     assert "Refusing to overwrite existing Passwatcher uninstall metadata" in text
     assert "Refusing to overwrite existing Passwatcher installer state" in text
+    assert "Invoke-SmokeFallbackCleanup" in text
+    assert "windows-installer-cleanup.ps1" in text
+
+
+def test_smoke_fallback_attempts_registry_cleanup_after_earlier_failure(tmp_path) -> None:
+    shell = shutil.which("powershell") or shutil.which("pwsh")
+    if shell is None:
+        return
+    cleanup_helper = Path("tests/setup/windows-installer-cleanup.ps1").resolve()
+    harness = tmp_path / "cleanup-harness.ps1"
+    harness.write_text(
+        f". '{str(cleanup_helper).replace("'", "''")}'\n"
+        "$events = [Collections.Generic.List[string]]::new()\n"
+        "$message = $null\n"
+        "try {\n"
+        "  Invoke-SmokeFallbackCleanup `\n"
+        "    -UninstallerAction { $events.Add('uninstaller'); throw 'uninstaller failed' } `\n"
+        "    -InstallDirectoryAction { $events.Add('install-directory'); throw 'directory failed' } `\n"
+        "    -PathAction { $events.Add('path') } `\n"
+        "    -RegistryAction { $events.Add('registry') } `\n"
+        "    -ConfigAction { $events.Add('config') }\n"
+        "}\n"
+        "catch { $message = $_.Exception.Message }\n"
+        "[PSCustomObject]@{ events = @($events); message = $message } | ConvertTo-Json -Compress\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-File", str(harness)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    output = json.loads(result.stdout)
+    assert output["events"] == ["uninstaller", "install-directory", "path", "registry", "config"]
+    assert "uninstaller failed" in output["message"]
+    assert "directory failed" in output["message"]
 
 
 def _run_path_transform(operation: str, state: str, value: str, entry: str, restore_absent=False):

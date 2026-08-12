@@ -7,6 +7,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+. (Join-Path $PSScriptRoot "windows-installer-cleanup.ps1")
+
 if ($env:PASSWATCHER_SMOKE_ISOLATED_USER -ne "1") {
     throw "This smoke test changes the current user's PATH. Run it only in a disposable Windows user or CI sandbox and set PASSWATCHER_SMOKE_ISOLATED_USER=1."
 }
@@ -235,33 +237,36 @@ try {
     Write-Host "Passwatcher installer smoke test passed."
 }
 finally {
-    if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
-        try {
+    Invoke-SmokeFallbackCleanup `
+        -UninstallerAction {
+            if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
             $partialUninstall = Start-Process -FilePath $uninstaller -ArgumentList @("/S") -Wait -PassThru
             if ($partialUninstall.ExitCode -ne 0) {
-                Write-Warning "Partial-install uninstaller exited with code $($partialUninstall.ExitCode)."
+                    throw "Partial-install uninstaller exited with code $($partialUninstall.ExitCode)."
+                }
+            }
+        } `
+        -InstallDirectoryAction {
+            if (Test-Path -LiteralPath $installDirectory) {
+                Remove-Item -LiteralPath $installDirectory -Recurse -Force
+            }
+        } `
+        -PathAction {
+            if (-not (Test-UserPathMatches -Expected $originalUserPath)) {
+                Restore-OriginalUserPath
+            }
+        } `
+        -RegistryAction {
+            if (
+                (Test-RegistrySubKeyExists -SubKey $uninstallSubKey) -or
+                (Test-InstallerStateValueExists)
+            ) {
+                Remove-SmokeRegistryMutations
+            }
+        } `
+        -ConfigAction {
+            if ($createdConfig -and (Test-Path -LiteralPath $configDirectory)) {
+                Remove-Item -LiteralPath $configDirectory -Recurse -Force
             }
         }
-        catch {
-            Write-Warning "Partial-install uninstaller cleanup failed: $($_.Exception.Message)"
-        }
-    }
-    $fallbackCleanupRequired = (
-        (Test-Path -LiteralPath $installDirectory) -or
-        (-not (Test-UserPathMatches -Expected $originalUserPath)) -or
-        (Test-RegistrySubKeyExists -SubKey $uninstallSubKey) -or
-        (Test-InstallerStateValueExists)
-    )
-    if ($fallbackCleanupRequired) {
-        if (Test-Path -LiteralPath $installDirectory) {
-            Remove-Item -LiteralPath $installDirectory -Recurse -Force
-        }
-        if (-not (Test-UserPathMatches -Expected $originalUserPath)) {
-            Restore-OriginalUserPath
-        }
-        Remove-SmokeRegistryMutations
-    }
-    if ($createdConfig -and (Test-Path -LiteralPath $configDirectory)) {
-        Remove-Item -LiteralPath $configDirectory -Recurse -Force
-    }
 }
