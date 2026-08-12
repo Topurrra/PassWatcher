@@ -17,5 +17,6 @@ pytest-cache-files-*/
 *.egg-info/
 /build/
 /dist/
-/docs/*
+# Local plans, designs, and extended documentation
+/docs/
 /.claude/*
