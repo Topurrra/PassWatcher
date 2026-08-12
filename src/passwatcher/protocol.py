@@ -6,7 +6,8 @@ import json
 from typing import cast
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
+MAX_REQUEST_BYTES = 16 * 1024 * 1024
 _MALFORMED_MESSAGE = "The server returned an invalid response"
 
 
@@ -45,20 +46,23 @@ def parse_response(raw: bytes) -> dict[str, object]:
     version = response.get("protocol_version")
     if type(version) is not int:
         raise _malformed_response()
-    if version != PROTOCOL_VERSION:
-        raise ProtocolError(
-            "incompatible_protocol", "The server uses an incompatible protocol version"
-        )
-
     ok = response.get("ok")
     if type(ok) is not bool:
         raise _malformed_response()
 
     if ok:
+        if version != PROTOCOL_VERSION:
+            raise ProtocolError(
+                "incompatible_protocol", "The server uses an incompatible protocol version"
+            )
         if "result" not in response:
             raise _malformed_response()
         return cast(dict[str, object], response)
 
+    if version not in {1, PROTOCOL_VERSION}:
+        raise ProtocolError(
+            "incompatible_protocol", "The server uses an incompatible protocol version"
+        )
     error = response.get("error")
     if not isinstance(error, dict):
         raise _malformed_response()

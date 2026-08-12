@@ -154,6 +154,54 @@ def test_built_zipapp_is_reproducible_and_runs_without_project_dependencies(tmp_
         assert {entry.date_time for entry in archive.infolist()} == {(1980, 1, 1, 0, 0, 0)}
 
 
+def test_built_zipapp_accepts_v1_health_and_v2_import(tmp_path: Path) -> None:
+    """Catches a release embedding an older server than the client protocol."""
+    environment = {"PASSWATCHER_DATA_DIR": str(tmp_path), "PYTHONNOUSERSITE": "1"}
+    health = subprocess.run(
+        [sys.executable, str(ZIPAPP_PATH), "rpc"],
+        input=json.dumps({"protocol_version": 1, "operation": "health", "payload": {}}),
+        text=True,
+        capture_output=True,
+        env=environment,
+        check=False,
+    )
+    imported = subprocess.run(
+        [sys.executable, str(ZIPAPP_PATH), "rpc"],
+        input=json.dumps(
+            {
+                "protocol_version": 2,
+                "operation": "import",
+                "payload": {
+                    "records": [
+                        {
+                            "service": "github.com",
+                            "label": "",
+                            "username": "nika",
+                            "password": "secret",
+                            "notes": "",
+                        }
+                    ],
+                    "duplicates": "skip",
+                },
+            }
+        ),
+        text=True,
+        capture_output=True,
+        env=environment,
+        check=False,
+    )
+
+    assert health.returncode == 0
+    assert json.loads(health.stdout)["protocol_version"] == 1
+    assert imported.returncode == 0
+    assert json.loads(imported.stdout) == {
+        "protocol_version": 2,
+        "ok": True,
+        "result": {"total": 1, "inserted": 1, "updated": 0, "skipped": 0},
+    }
+    assert health.stderr == imported.stderr == ""
+
+
 def test_zipapp_digest_is_independent_of_checked_out_line_endings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

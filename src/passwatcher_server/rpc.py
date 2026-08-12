@@ -6,10 +6,13 @@ from dataclasses import asdict
 import json
 
 from .database import DatabaseError, NotFoundError, ValidationError, Vault
+from .models import CredentialDraft
 
 
-PROTOCOL_VERSION = 1
-MAX_REQUEST_BYTES = 1_048_576
+PROTOCOL_VERSION = 2
+SUPPORTED_PROTOCOL_VERSIONS = frozenset({1, 2})
+MAX_REQUEST_BYTES = 16 * 1024 * 1024
+MAX_IMPORT_ROWS = 3000
 
 _REQUEST_FIELDS = frozenset({"protocol_version", "operation", "payload"})
 _PAYLOAD_FIELDS = {
@@ -19,6 +22,7 @@ _PAYLOAD_FIELDS = {
     "update": frozenset({"id", "service", "label", "username", "password", "notes"}),
     "delete": frozenset({"id"}),
     "health": frozenset(),
+    "import": frozenset({"records", "duplicates"}),
 }
 
 
@@ -27,25 +31,35 @@ def handle_request(raw: bytes, vault: Vault) -> bytes:
     if len(raw) > MAX_REQUEST_BYTES:
         return _error("request_too_large", "The request is too large")
 
+    response_version = PROTOCOL_VERSION
     try:
         request = _parse_request(raw)
+        requested_version = request.get("protocol_version")
+        if type(requested_version) is int and requested_version in SUPPORTED_PROTOCOL_VERSIONS:
+            response_version = requested_version
         if set(request) != _REQUEST_FIELDS:
             raise _RequestError("invalid_request", "The request fields are invalid")
         operation = request["operation"]
         payload = request["payload"]
-        _validate_request(operation, payload, request["protocol_version"])
+        response_version = _validate_request(operation, payload, request["protocol_version"])
         result = _dispatch(operation, payload, vault)
     except _RequestError as error:
-        return _error(error.code, error.message)
+        return _error(error.code, error.message, response_version)
     except ValidationError as error:
-        return _error(error.code, error.message)
+        return _error(error.code, error.message, response_version)
     except NotFoundError:
-        return _error("not_found", "The requested credential was not found")
+        return _error("not_found", "The requested credential was not found", response_version)
     except DatabaseError:
-        return _error("database_error", "The vault database could not complete the request")
+        return _error(
+            "database_error",
+            "The vault database could not complete the request",
+            response_version,
+        )
     except Exception:
-        return _error("internal_error", "The server could not complete the request")
-    return _success(result)
+        return _error(
+            "internal_error", "The server could not complete the request", response_version
+        )
+    return _success(result, response_version)
 
 
 class _RequestError(ValueError):
@@ -79,10 +93,10 @@ def _reject_constant(value: str) -> None:
     raise ValueError(f"Invalid JSON constant: {value}")
 
 
-def _validate_request(operation: object, payload: object, version: object) -> None:
+def _validate_request(operation: object, payload: object, version: object) -> int:
     if type(version) is not int:
         raise _RequestError("invalid_request", "protocol_version must be an integer")
-    if version != PROTOCOL_VERSION:
+    if version not in SUPPORTED_PROTOCOL_VERSIONS:
         raise _RequestError("incompatible_protocol", "The request uses an incompatible protocol version")
     if not isinstance(operation, str):
         raise _RequestError("invalid_request", "operation must be text")
@@ -90,10 +104,34 @@ def _validate_request(operation: object, payload: object, version: object) -> No
         raise _RequestError("unknown_operation", "The requested operation is not supported")
     if not isinstance(payload, dict) or set(payload) != _PAYLOAD_FIELDS[operation]:
         raise _RequestError("invalid_payload", "The payload fields are invalid for this operation")
+    if operation == "import" and version < 2:
+        raise _RequestError(
+            "incompatible_protocol", "Bulk import requires protocol version 2"
+        )
     _validate_payload_types(operation, payload)
+    return version
 
 
 def _validate_payload_types(operation: str, payload: dict[object, object]) -> None:
+    if operation == "import":
+        records = payload["records"]
+        duplicates = payload["duplicates"]
+        if not isinstance(records, list) or not 1 <= len(records) <= MAX_IMPORT_ROWS:
+            raise _RequestError(
+                "invalid_payload",
+                f"records must contain between 1 and {MAX_IMPORT_ROWS} items",
+            )
+        fields = {"service", "label", "username", "password", "notes"}
+        if any(
+            not isinstance(record, dict)
+            or set(record) != fields
+            or any(type(record[field]) is not str for field in fields)
+            for record in records
+        ):
+            raise _RequestError("invalid_payload", "Import records are invalid")
+        if type(duplicates) is not str:
+            raise _RequestError("invalid_payload", "duplicates must be text")
+        return
     text_fields = _PAYLOAD_FIELDS[operation] - {"id"}
     if any(not isinstance(payload[field], str) for field in text_fields):
         raise _RequestError("invalid_payload", "Text payload fields must be strings")
@@ -116,6 +154,9 @@ def _dispatch(operation: str, payload: dict[object, object], vault: Vault) -> ob
         return None
     if operation == "health":
         return vault.health()
+    if operation == "import":
+        drafts = [CredentialDraft(**record) for record in payload["records"]]
+        return asdict(vault.import_many(drafts, duplicates=payload["duplicates"]))
     raise AssertionError("Operation should have been validated")
 
 
@@ -123,14 +164,14 @@ def _credential(value: object) -> dict[str, object]:
     return asdict(value)
 
 
-def _success(result: object) -> bytes:
-    return _encode({"protocol_version": PROTOCOL_VERSION, "ok": True, "result": result})
+def _success(result: object, version: int) -> bytes:
+    return _encode({"protocol_version": version, "ok": True, "result": result})
 
 
-def _error(code: str, message: str) -> bytes:
+def _error(code: str, message: str, version: int = PROTOCOL_VERSION) -> bytes:
     return _encode(
         {
-            "protocol_version": PROTOCOL_VERSION,
+            "protocol_version": version,
             "ok": False,
             "error": {"code": code, "message": message},
         }

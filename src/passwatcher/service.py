@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Protocol
 
 from .protocol import ProtocolError, make_request, parse_response
@@ -32,6 +32,27 @@ class CredentialRecord:
     notes: str
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class CredentialDraft:
+    """One credential candidate supplied by a local import parser."""
+
+    service: str
+    label: str
+    username: str
+    password: str
+    notes: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImportSummary:
+    """Non-secret result counts returned by a bulk import."""
+
+    total: int
+    inserted: int
+    updated: int
+    skipped: int
 
 
 class PasswordService:
@@ -95,6 +116,30 @@ class PasswordService:
         if not isinstance(result, dict) or not all(isinstance(key, str) for key in result):
             raise _malformed_response()
         return result
+
+    def import_many(
+        self, records: list[CredentialDraft], duplicates: str
+    ) -> ImportSummary:
+        result = self._invoke(
+            "import",
+            {
+                "records": [asdict(record) for record in records],
+                "duplicates": duplicates,
+            },
+        )
+        fields = {"total", "inserted", "updated", "skipped"}
+        if not isinstance(result, dict) or set(result) != fields:
+            raise _malformed_response()
+        if any(type(result[field]) is not int or result[field] < 0 for field in fields):
+            raise _malformed_response()
+        if result["total"] != result["inserted"] + result["updated"] + result["skipped"]:
+            raise _malformed_response()
+        return ImportSummary(
+            total=result["total"],
+            inserted=result["inserted"],
+            updated=result["updated"],
+            skipped=result["skipped"],
+        )
 
     def _invoke(self, operation: str, payload: dict[str, object]) -> object:
         response = parse_response(self._transport.request(make_request(operation, payload)))

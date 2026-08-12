@@ -10,7 +10,7 @@ def test_request_is_versioned_json_line():
     raw = make_request("search", {"query": "github"})
 
     assert json.loads(raw) == {
-        "protocol_version": 1,
+        "protocol_version": 2,
         "operation": "search",
         "payload": {"query": "github"},
     }
@@ -23,7 +23,7 @@ def test_request_rejects_non_finite_payload_values(value):
 
 
 def test_response_rejects_wrong_version():
-    raw = b'{"protocol_version":2,"ok":true,"result":{}}'
+    raw = b'{"protocol_version":3,"ok":true,"result":{}}'
 
     with pytest.raises(ProtocolError) as error:
         parse_response(raw)
@@ -33,7 +33,7 @@ def test_response_rejects_wrong_version():
 
 def test_response_maps_safe_server_error():
     raw = (
-        b'{"protocol_version":1,"ok":false,'
+        b'{"protocol_version":2,"ok":false,'
         b'"error":{"code":"not_found","message":"No match"}}'
     )
 
@@ -41,3 +41,16 @@ def test_response_maps_safe_server_error():
         parse_response(raw)
 
     assert error.value.code == "not_found"
+
+
+def test_response_maps_safe_error_from_older_server() -> None:
+    """Catches actionable v1 upgrade errors being hidden by version rejection."""
+    raw = (
+        b'{"protocol_version":1,"ok":false,'
+        b'"error":{"code":"incompatible_protocol","message":"Upgrade required"}}'
+    )
+
+    with pytest.raises(ProtocolError, match="Upgrade required") as error:
+        parse_response(raw)
+
+    assert error.value.code == "incompatible_protocol"

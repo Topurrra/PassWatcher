@@ -51,7 +51,7 @@ class FakeRemote:
         self.events.append("initialize")
         self.database_mutations.append("initialize")
         self.created_databases += 1
-        self.state = RemoteState(True, 1, 1, True, modes_ok=True)
+        self.state = RemoteState(True, 2, 1, True, modes_ok=True)
 
     def health(self, _config: ClientConfig) -> dict[str, object]:
         self.events.append("health")
@@ -81,7 +81,7 @@ def config() -> ClientConfig:
 
 def test_setup_reuses_compatible_installation(manager: SetupManager, remote: FakeRemote) -> None:
     """Catches setup replacing a compatible server or touching its database."""
-    remote.state = RemoteState(True, 1, 1, True, modes_ok=True)
+    remote.state = RemoteState(True, 2, 1, True, modes_ok=True)
 
     result = manager.install_or_upgrade(config(), remote.state)
 
@@ -138,7 +138,7 @@ def test_failed_health_is_a_setup_error(manager: SetupManager, remote: FakeRemot
     }
 
     with pytest.raises(SetupError) as error:
-        manager.install_or_upgrade(config(), RemoteState(True, 1, 1, True, modes_ok=True))
+        manager.install_or_upgrade(config(), RemoteState(True, 2, 1, True, modes_ok=True))
 
     assert error.value.code == "health_failed"
 
@@ -147,7 +147,7 @@ def test_setup_rejects_insecure_compatible_installation(
     manager: SetupManager, remote: FakeRemote
 ) -> None:
     """Catches reuse accepting a protocol-compatible vault with insecure mode bits."""
-    state = RemoteState(True, 1, 1, True, modes_ok=False)
+    state = RemoteState(True, 2, 1, True, modes_ok=False)
 
     with pytest.raises(SetupError) as error:
         manager.install_or_upgrade(config(), state)
@@ -186,7 +186,7 @@ def test_health_rpc_does_not_pass_both_input_and_stdin(
 ) -> None:
     """Catches production health checks failing before SSH starts with ValueError."""
     response = (
-        b'{"protocol_version":1,"ok":true,"result":'
+        b'{"protocol_version":2,"ok":true,"result":'
         b'{"schema_version":1,"integrity_check":"ok"}}'
     )
 

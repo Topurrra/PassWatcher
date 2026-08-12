@@ -25,7 +25,7 @@ class FakeSetupRunner:
             raise self.inspect_failure
         return RemoteState(
             True,
-            1,
+            2,
             1,
             True,
             (3, 12, 0),
