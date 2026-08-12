@@ -1,4 +1,4 @@
-"""The Passwatcher lookup and list command-line interface."""
+"""The Passwatcher command-line interface."""
 
 from __future__ import annotations
 
@@ -8,24 +8,43 @@ from typing import Annotated
 
 import typer
 from platformdirs import user_config_dir
+from typer.core import TyperGroup
 
 from .clipboard import Clipboard
 from .config import ConfigError, load_config
+from .passwords import PasswordPolicyError, generate_password
 from .protocol import ProtocolError
+from . import prompts
 from .render import Renderer
-from .service import PasswordService
+from .service import CredentialRecord, PasswordService
 from .transport import SshTransport, TransportError
 
 
-app = typer.Typer(add_completion=False, invoke_without_command=True, no_args_is_help=False)
+class _PasswatcherGroup(TyperGroup):
+    """Reserve known commands before the default lookup consumes positional words."""
+
+    def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:
+        if args and args[0] in self.commands:
+            ctx._protected_args, ctx.args = args[:1], args[1:]
+            return ctx.args
+        return super().parse_args(ctx, args)
+
+
+app = typer.Typer(
+    add_completion=False,
+    invoke_without_command=True,
+    no_args_is_help=False,
+    cls=_PasswatcherGroup,
+)
 
 
 @dataclass(slots=True)
 class _Runtime:
-    service: PasswordService
+    service: PasswordService | None
     clipboard: Clipboard
     renderer: Renderer
     debug: bool
+    config_path: Path
 
 
 def default_config_path() -> Path:
@@ -49,8 +68,14 @@ def create_clipboard() -> Clipboard:
 
 def _runtime(ctx: typer.Context, config_path: Path, plain: bool, debug: bool) -> _Runtime:
     if ctx.obj is None:
-        ctx.obj = _Runtime(create_service(config_path), create_clipboard(), Renderer(plain), debug)
+        ctx.obj = _Runtime(None, create_clipboard(), Renderer(plain), debug, config_path)
     return ctx.obj
+
+
+def _service(runtime: _Runtime) -> PasswordService:
+    if runtime.service is None:
+        runtime.service = create_service(runtime.config_path)
+    return runtime.service
 
 
 @app.callback()
@@ -67,23 +92,16 @@ def lookup(
     if ctx.invoked_subcommand is None and not query:
         raise typer.BadParameter("A search query is required.", param_hint="QUERY")
 
-    try:
-        runtime = _runtime(ctx, config_path, plain, debug)
-    except (ConfigError, TransportError, ProtocolError) as error:
-        _render_expected_error(Renderer(plain), debug, error)
-        raise typer.Exit(1) from None
+    runtime = _runtime(ctx, config_path, plain, debug)
 
     if ctx.invoked_subcommand is not None:
         return
     assert query is not None
-    if query[0] == "list":
-        extra_arguments = query[1:]
-        if extra_arguments not in ([], ["--secrets"]):
-            raise typer.BadParameter("The list command accepts only --secrets.", param_hint="list")
-        _list_records(runtime, secrets=extra_arguments == ["--secrets"])
+    _dispatch_command(runtime, query)
+    if query[0] in {"add", "edit", "delete", "generate", "list"}:
         return
     try:
-        matches = runtime.service.search(" ".join(query))
+        matches = _service(runtime).search(" ".join(query))
     except (ConfigError, TransportError, ProtocolError) as error:
         _render_expected_error(runtime.renderer, runtime.debug, error)
         raise typer.Exit(1) from None
@@ -110,11 +128,242 @@ def list_credentials(
 
 def _list_records(runtime: _Runtime, *, secrets: bool) -> None:
     try:
-        records = runtime.service.list_all()
+        records = _service(runtime).list_all()
     except (ConfigError, TransportError, ProtocolError) as error:
         _render_expected_error(runtime.renderer, runtime.debug, error)
         raise typer.Exit(1) from None
     runtime.renderer.list_records(records, secrets=secrets)
+
+
+@app.command("add")
+def add_credential(
+    ctx: typer.Context,
+    service: Annotated[str | None, typer.Option("--service")] = None,
+    label: Annotated[str | None, typer.Option("--label")] = None,
+    username: Annotated[str | None, typer.Option("--username")] = None,
+    password: Annotated[str | None, typer.Option("--password")] = None,
+    notes: Annotated[str | None, typer.Option("--notes")] = None,
+) -> None:
+    """Interactively add a credential after confirmation."""
+    runtime: _Runtime = ctx.obj
+    _add(runtime, service, label, username, password, notes)
+
+
+def _add(
+    runtime: _Runtime,
+    service: str | None,
+    label: str | None,
+    username: str | None,
+    password: str | None,
+    notes: str | None,
+) -> None:
+    try:
+        service = service if service is not None else prompts.text("Service")
+        label = label if label is not None else prompts.text("Label (optional)")
+        username = username if username is not None else prompts.text("Username")
+        password = _password_value(password)
+        notes = notes if notes is not None else prompts.text("Notes (optional)")
+        if not prompts.confirm("Create credential?", default=False):
+            _cancelled()
+            return
+        _service(runtime).create(service, label, username, password, notes)
+    except prompts.PromptCancelled:
+        _cancelled()
+    except (ConfigError, TransportError, ProtocolError) as error:
+        _render_expected_error(runtime.renderer, runtime.debug, error)
+        raise typer.Exit(1) from None
+    else:
+        typer.echo("Credential added.")
+
+
+@app.command("edit")
+def edit_credential(
+    ctx: typer.Context,
+    query: Annotated[str, typer.Argument()],
+    service: Annotated[str | None, typer.Option("--service")] = None,
+    label: Annotated[str | None, typer.Option("--label")] = None,
+    username: Annotated[str | None, typer.Option("--username")] = None,
+    password: Annotated[str | None, typer.Option("--password")] = None,
+    notes: Annotated[str | None, typer.Option("--notes")] = None,
+) -> None:
+    """Find, edit, and confirm one credential."""
+    runtime: _Runtime = ctx.obj
+    _edit(runtime, query, service, label, username, password, notes)
+
+
+def _edit(
+    runtime: _Runtime,
+    query: str,
+    service: str | None,
+    label: str | None,
+    username: str | None,
+    password: str | None,
+    notes: str | None,
+) -> None:
+    try:
+        record = _select_match(runtime, query)
+        service = service if service is not None else prompts.text("Service", default=record.service)
+        label = label if label is not None else prompts.text("Label (optional)", default=record.label)
+        username = username if username is not None else prompts.text("Username", default=record.username)
+        password = _password_value(password, current=record.password)
+        notes = notes if notes is not None else prompts.text("Notes (optional)", default=record.notes)
+        if not prompts.confirm("Update credential?", default=False):
+            _cancelled()
+            return
+        _service(runtime).update(record.id, service, label, username, password, notes)
+    except prompts.PromptCancelled:
+        _cancelled()
+    except (ConfigError, TransportError, ProtocolError) as error:
+        _render_expected_error(runtime.renderer, runtime.debug, error)
+        raise typer.Exit(1) from None
+    else:
+        typer.echo("Credential updated.")
+
+
+@app.command("delete")
+def delete_credential(ctx: typer.Context, query: Annotated[str, typer.Argument()]) -> None:
+    """Find and delete one credential after an explicit confirmation."""
+    runtime: _Runtime = ctx.obj
+    _delete(runtime, query)
+
+
+def _delete(runtime: _Runtime, query: str) -> None:
+    try:
+        record = _select_match(runtime, query)
+        typer.echo(f"Delete credential: {record.service} | {record.label} | {record.username}")
+        if not prompts.confirm("Delete this credential?", default=False):
+            _cancelled()
+            return
+        _service(runtime).delete(record.id)
+    except prompts.PromptCancelled:
+        _cancelled()
+    except (ConfigError, TransportError, ProtocolError) as error:
+        _render_expected_error(runtime.renderer, runtime.debug, error)
+        raise typer.Exit(1) from None
+    else:
+        typer.echo("Credential deleted.")
+
+
+@app.command("generate")
+def generate(
+    ctx: typer.Context,
+    length: Annotated[int, typer.Option("--length", min=8, max=256)] = 24,
+    no_lower: Annotated[bool, typer.Option("--no-lower")] = False,
+    no_upper: Annotated[bool, typer.Option("--no-upper")] = False,
+    no_digits: Annotated[bool, typer.Option("--no-digits")] = False,
+    no_symbols: Annotated[bool, typer.Option("--no-symbols")] = False,
+) -> None:
+    """Generate a password and copy the exact result to the clipboard."""
+    runtime: _Runtime = ctx.obj
+    _generate(runtime, length, not no_lower, not no_upper, not no_digits, not no_symbols)
+
+
+def _generate(
+    runtime: _Runtime, length: int, lower: bool, upper: bool, digits: bool, symbols: bool
+) -> None:
+    try:
+        password = generate_password(length, lower, upper, digits, symbols)
+    except PasswordPolicyError as error:
+        raise typer.BadParameter(str(error), param_hint="--length") from None
+    typer.echo(password)
+    runtime.clipboard.copy(password)
+
+
+def _dispatch_command(runtime: _Runtime, arguments: list[str]) -> None:
+    """Dispatch commands while preserving positional lookup as the default command."""
+    command, *remaining = arguments
+    if command == "list":
+        if remaining not in ([], ["--secrets"]):
+            raise typer.BadParameter("The list command accepts only --secrets.", param_hint="list")
+        _list_records(runtime, secrets=remaining == ["--secrets"])
+    elif command == "add":
+        _add(runtime, **_field_options(remaining))
+    elif command == "edit":
+        query, options = _query_and_field_options(remaining)
+        _edit(runtime, query, **options)
+    elif command == "delete":
+        if len(remaining) != 1:
+            raise typer.BadParameter("The delete command requires one QUERY.", param_hint="QUERY")
+        _delete(runtime, remaining[0])
+    elif command == "generate":
+        _generate(runtime, **_generation_options(remaining))
+
+
+def _field_options(arguments: list[str]) -> dict[str, str | None]:
+    values: dict[str, str | None] = {
+        "service": None,
+        "label": None,
+        "username": None,
+        "password": None,
+        "notes": None,
+    }
+    iterator = iter(arguments)
+    for option in iterator:
+        if option not in {f"--{name}" for name in values}:
+            raise typer.BadParameter(f"Unknown option: {option}")
+        try:
+            values[option.removeprefix("--")] = next(iterator)
+        except StopIteration:
+            raise typer.BadParameter(f"Option {option} requires a value.") from None
+    return values
+
+
+def _query_and_field_options(arguments: list[str]) -> tuple[str, dict[str, str | None]]:
+    try:
+        first_option = next(index for index, value in enumerate(arguments) if value.startswith("--"))
+    except StopIteration:
+        first_option = len(arguments)
+    query_parts, option_parts = arguments[:first_option], arguments[first_option:]
+    if not query_parts:
+        raise typer.BadParameter("The edit command requires a QUERY.", param_hint="QUERY")
+    return " ".join(query_parts), _field_options(option_parts)
+
+
+def _generation_options(arguments: list[str]) -> dict[str, int | bool]:
+    values: dict[str, int | bool] = {
+        "length": 24,
+        "lower": True,
+        "upper": True,
+        "digits": True,
+        "symbols": True,
+    }
+    iterator = iter(arguments)
+    for option in iterator:
+        if option == "--length":
+            try:
+                values["length"] = int(next(iterator))
+            except (StopIteration, ValueError):
+                raise typer.BadParameter("--length requires an integer.") from None
+        elif option in {"--no-lower", "--no-upper", "--no-digits", "--no-symbols"}:
+            values[option.removeprefix("--no-")] = False
+        else:
+            raise typer.BadParameter(f"Unknown option: {option}")
+    return values
+
+
+def _password_value(value: str | None, *, current: str | None = None) -> str:
+    """Resolve a typed or generated password without displaying existing secrets."""
+    if value is None:
+        value = prompts.text("Password (or 'generate')", secret=True)
+    if not value and current is not None:
+        return current
+    if value.casefold() == "generate":
+        return generate_password()
+    return value
+
+
+def _select_match(runtime: _Runtime, query: str) -> CredentialRecord:
+    matches = _service(runtime).search(query)
+    if not matches:
+        runtime.renderer.not_found()
+        raise typer.Exit(1)
+    selected = prompts.select_record(matches)
+    assert selected is not None
+    return selected
+
+
+def _cancelled() -> None:
+    typer.echo("Cancelled")
 
 
 def _render_expected_error(
