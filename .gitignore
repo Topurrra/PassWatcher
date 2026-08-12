@@ -17,3 +17,5 @@ pytest-cache-files-*/
 *.egg-info/
 /build/
 /dist/
+/docs/*
+/.claude/*
