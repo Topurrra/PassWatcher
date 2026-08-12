@@ -11,12 +11,12 @@ SetCompressor /SOLID lzma
 
 !define PRODUCT_NAME "Passwatcher"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Passwatcher"
-!define BUILD_DIR "${__FILEDIR__}\..\dist\passwatcher"
-!define PATH_HELPER "${__FILEDIR__}\update_user_path.ps1"
+!define BUILD_DIR "..\dist\passwatcher"
+!define PATH_HELPER "update_user_path.ps1"
 !define INSTALL_DIR "$LOCALAPPDATA\Programs\Passwatcher"
 
 Name "${PRODUCT_NAME} ${VERSION}"
-OutFile "${__FILEDIR__}\..\dist\Passwatcher-Setup-${VERSION}.exe"
+OutFile "..\dist\Passwatcher-Setup-${VERSION}.exe"
 InstallDir "${INSTALL_DIR}"
 ShowInstDetails show
 ShowUninstDetails show

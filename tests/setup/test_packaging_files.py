@@ -1,11 +1,13 @@
 from pathlib import Path
 import json
+import os
 import re
 import shutil
 import subprocess
 import tomllib
 
 import passwatcher
+import pytest
 
 
 def _nsis_function(source: str, name: str) -> str:
@@ -111,6 +113,39 @@ def test_build_script_runs_release_gates_in_order() -> None:
     assert "--basetemp" in text
     assert "-p no:cacheprovider" in text
     assert "New-Item -ItemType Directory -Path $pytestParent" in text
+
+
+def test_nsis_compiles_from_the_repository_root(tmp_path) -> None:
+    makensis = shutil.which("makensis")
+    if makensis is None:
+        for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+            root = os.environ.get(variable)
+            if root is not None:
+                candidate = Path(root, "NSIS", "makensis.exe")
+                if candidate.is_file():
+                    makensis = str(candidate)
+                    break
+    if makensis is None:
+        pytest.skip("NSIS makensis is not installed")
+
+    project = tmp_path / "project"
+    packaging = project / "packaging"
+    payload = project / "dist" / "passwatcher"
+    packaging.mkdir(parents=True)
+    payload.mkdir(parents=True)
+    shutil.copy2("packaging/passwatcher.nsi", packaging / "passwatcher.nsi")
+    shutil.copy2("packaging/update_user_path.ps1", packaging / "update_user_path.ps1")
+    (payload / "pw.exe").write_bytes(b"passwatcher compiler fixture")
+
+    result = subprocess.run(
+        [makensis, "/DVERSION=0.0.0", "packaging/passwatcher.nsi"],
+        cwd=project,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (project / "dist" / "Passwatcher-Setup-0.0.0.exe").is_file()
 
 
 def test_smoke_script_requires_disposable_context_and_refuses_existing_config() -> None:
