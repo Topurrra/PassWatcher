@@ -22,6 +22,8 @@ $installerPath = $installerMatches[0].FullName
 $appData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
 $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 $configDirectory = Join-Path $appData "Passwatcher"
+$localDataDirectory = Join-Path $localAppData "Passwatcher"
+$localVaultSentinel = Join-Path $localDataDirectory "vault.db"
 $installDirectory = Join-Path $localAppData "Programs\Passwatcher"
 $pwExecutable = Join-Path $installDirectory "pw.exe"
 $passwatcherExecutable = Join-Path $installDirectory "passwatcher.exe"
@@ -31,9 +33,13 @@ $installerProductSubKey = "Software\Passwatcher"
 $installerStateSubKey = "Software\Passwatcher\Installer"
 $sentinel = "passwatcher-smoke-$([Guid]::NewGuid().ToString('N'))"
 $createdConfig = $false
+$createdLocalData = $false
 
 if (Test-Path -LiteralPath $configDirectory) {
     throw "Refusing to use an existing Passwatcher config directory: $configDirectory"
+}
+if (Test-Path -LiteralPath $localDataDirectory) {
+    throw "Refusing to use an existing Passwatcher local data directory: $localDataDirectory"
 }
 if (Test-Path -LiteralPath $installDirectory) {
     throw "Refusing to overwrite an existing Passwatcher installation: $installDirectory"
@@ -214,6 +220,9 @@ try {
     New-Item -ItemType Directory -Path $configDirectory | Out-Null
     Set-Content -LiteralPath (Join-Path $configDirectory "config.toml") -Value "smoke_sentinel = `"$sentinel`"" -Encoding UTF8
     $createdConfig = $true
+    New-Item -ItemType Directory -Path $localDataDirectory | Out-Null
+    Set-Content -LiteralPath $localVaultSentinel -Value $sentinel -Encoding UTF8
+    $createdLocalData = $true
 
     Invoke-CheckedProcess -FilePath $installerPath -ArgumentList @("/S")
     if ((Get-InstallPathEntryCount) -ne 1) {
@@ -222,6 +231,9 @@ try {
     $configText = Get-Content -Raw -LiteralPath (Join-Path $configDirectory "config.toml")
     if ($configText -notlike "*$sentinel*") {
         throw "Upgrade did not preserve the sentinel configuration."
+    }
+    if ((Get-Content -Raw -LiteralPath $localVaultSentinel) -notlike "*$sentinel*") {
+        throw "Upgrade did not preserve the local vault sentinel."
     }
 
     Invoke-CheckedProcess -FilePath $uninstaller -ArgumentList @("/S")
@@ -248,6 +260,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath (Join-Path $configDirectory "config.toml") -PathType Leaf)) {
         throw "Silent uninstall did not retain the sentinel configuration."
+    }
+    if (-not (Test-Path -LiteralPath $localVaultSentinel -PathType Leaf)) {
+        throw "Silent uninstall did not retain the local DPAPI vault sentinel."
     }
 
     Write-Host "Passwatcher installer smoke test passed."
@@ -283,6 +298,9 @@ finally {
         -ConfigAction {
             if ($createdConfig -and (Test-Path -LiteralPath $configDirectory)) {
                 Remove-Item -LiteralPath $configDirectory -Recurse -Force
+            }
+            if ($createdLocalData -and (Test-Path -LiteralPath $localDataDirectory)) {
+                Remove-Item -LiteralPath $localDataDirectory -Recurse -Force
             }
         }
 }

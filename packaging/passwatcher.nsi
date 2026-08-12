@@ -141,4 +141,12 @@ product_state_cleanup_done:
     Delete "$APPDATA\Passwatcher\config.toml"
     RMDir "$APPDATA\Passwatcher"
 keep_config:
+  MessageBox MB_YESNO|MB_ICONQUESTION "Remove the local DPAPI vault and its backups too?" /SD IDNO IDNO keep_local_vault
+    Delete "$LOCALAPPDATA\Passwatcher\vault.db"
+    Delete "$LOCALAPPDATA\Passwatcher\vault.db-wal"
+    Delete "$LOCALAPPDATA\Passwatcher\vault.db-shm"
+    Delete "$LOCALAPPDATA\Passwatcher\backups\passwatcher-local-*-v1.db"
+    RMDir "$LOCALAPPDATA\Passwatcher\backups"
+    RMDir "$LOCALAPPDATA\Passwatcher"
+keep_local_vault:
 SectionEnd

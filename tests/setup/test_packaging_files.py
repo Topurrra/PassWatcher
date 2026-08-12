@@ -34,6 +34,26 @@ def test_installer_preserves_config_by_default() -> None:
     assert "MessageBox MB_YESNO" in text
 
 
+def test_uninstaller_preserves_local_dpapi_vault_by_default() -> None:
+    """Catches uninstall silently destroying the only local credential vault."""
+    text = Path("packaging/passwatcher.nsi").read_text(encoding="utf-8")
+    assert (
+        'MessageBox MB_YESNO|MB_ICONQUESTION "Remove the local DPAPI vault and its backups too?" /SD IDNO'
+        in text
+    )
+    assert 'Delete "$LOCALAPPDATA\\Passwatcher\\vault.db"' in text
+    assert 'Delete "$LOCALAPPDATA\\Passwatcher\\vault.db-wal"' in text
+    assert 'Delete "$LOCALAPPDATA\\Passwatcher\\vault.db-shm"' in text
+    assert 'RMDir /r "$LOCALAPPDATA\\Passwatcher"' not in text
+
+
+def test_feature_release_version_is_0_2_0() -> None:
+    """Catches the release workflow producing a stale versioned installer."""
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    assert metadata["project"]["version"] == "0.2.0"
+    assert passwatcher.__version__ == "0.2.0"
+
+
 def test_package_version_matches_project_metadata() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     assert passwatcher.__version__ == metadata["project"]["version"]
@@ -160,6 +180,8 @@ def test_smoke_script_requires_disposable_context_and_refuses_existing_config() 
     text = Path("tests/setup/windows-installer-smoke.ps1").read_text(encoding="utf-8")
     assert "PASSWATCHER_SMOKE_ISOLATED_USER" in text
     assert "Refusing to use an existing Passwatcher config directory" in text
+    assert "Refusing to use an existing Passwatcher local data directory" in text
+    assert "Silent uninstall did not retain the local DPAPI vault sentinel" in text
     assert text.count("Invoke-CheckedProcess -FilePath $installerPath") >= 2
     assert 'Invoke-CheckedProcess -FilePath $resolvedPw -ArgumentList @("--help")' in text
     assert "uninstall.exe" in text

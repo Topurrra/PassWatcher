@@ -1,6 +1,6 @@
 # Passwatcher
 
-Passwatcher is a single-user Windows password-manager CLI backed by one vault on a Linux server you own. The Windows client reaches the vault through your existing OpenSSH login. It does not run an HTTP service or cache credential records on Windows; only an explicit CSV export writes credentials locally.
+Passwatcher is a single-user Windows password-manager CLI. It can keep a serverless local vault protected for the current Windows user with DPAPI, or use one vault on a Linux server you own through OpenSSH. The last successfully configured mode is used by every normal command.
 
 ## Install on Windows
 
@@ -15,9 +15,20 @@ pw setup
 
 If another program named `pw` appears earlier in the machine `PATH`, use `passwatcher` instead. The installer provides both commands, and `passwatcher` is the unambiguous fallback without modifying machine-wide tools or settings.
 
-`pw setup` asks for the Linux SSH host, SSH user, port (normally `22`), and an optional identity-file path. Confirm the displayed target. Passwatcher checks connectivity, safely installs or reuses the server component, verifies the vault, and only then writes `%APPDATA%\Passwatcher\config.toml`. That file contains connection settings, not passwords.
+`pw setup` only displays the two explicit setup choices and changes nothing:
 
-Windows 10 or 11 must have the OpenSSH `ssh` and `scp` clients available. The Linux account needs Python 3.11 or newer and an already-running OpenSSH service.
+```powershell
+pw setup --local
+pw setup --remote
+```
+
+`pw setup --local` creates or opens `%LOCALAPPDATA%\Passwatcher\vault.db`, verifies DPAPI and SQLite, and selects it as the active vault. It needs no server and no master-password prompt.
+
+`pw setup --remote` asks for the Linux SSH host, SSH user, port (normally `22`), and an optional identity-file path. Confirm the displayed target. Passwatcher checks connectivity, safely installs or reuses the server component, verifies the vault, and only then selects remote mode in `%APPDATA%\Passwatcher\config.toml`. That file contains mode and connection settings, never passwords or DPAPI keys.
+
+When switching modes, Passwatcher previews non-secret counts and copies source-only credentials into the newly selected vault. Identical credentials are skipped. If the same service/label/username identity has different contents, choose once whether all source or destination versions win, or cancel without changing the active mode. After a successful local-to-remote switch, local deletion is a separate default-No prompt. Remote-to-local switching never deletes the remote vault.
+
+Local mode supports Windows 10 or 11. Remote mode additionally requires the Windows OpenSSH `ssh` and `scp` clients; the Linux account needs Python 3.11 or newer and an already-running OpenSSH service.
 
 ## Commands
 
@@ -81,7 +92,7 @@ pw import updated-passwords.csv -d update
 
 Passwatcher CSV requires `service`, `username`, and `password`; `label` and `notes` are optional. Browser CSV requires `url`, `username`, and `password`; `name` and `note` are optional. Header matching is case-insensitive, common extra browser columns are ignored, and empty optional cells are valid. Duplicate identity is the case-insensitive combination of service/URL, label/name, and username.
 
-Every import is fully parsed and validated on Windows before mutation. A mutating import sends one bounded request over SSH, creates an owner-only server backup, and commits in one SQLite transaction. A validation, conflict, backup, or database failure imports nothing. The CSV file itself is never uploaded to or retained on the Linux server.
+Every import is fully parsed and validated on Windows before mutation. A mutating import creates a protected local backup or an owner-only remote backup, then commits in one SQLite transaction. Remote imports send one bounded request through SSH; the CSV file itself is never uploaded or retained. A validation, conflict, backup, protection, or database failure imports nothing.
 
 Export a lossless Passwatcher CSV or a browser migration CSV:
 
@@ -108,6 +119,8 @@ Use `--plain` for stable output without color, for example `pw --plain list`. `-
 
 Install Passwatcher and run `pw setup` on each device with credentials for the same Linux account. Each device keeps only its own SSH connection configuration. Setup detects and reuses a compatible remote server and existing database; it never creates a second vault or clears the shared one. An older server is backed up and upgraded in place.
 
+Local DPAPI vaults are intentionally device/user-bound and do not synchronize. Use remote mode when several devices must share one active vault, or transfer deliberately through a protected workflow. CSV exports are plaintext and require special care.
+
 ## Linux files, permissions, and backups
 
 Passwatcher uses these fixed paths for the selected Linux user:
@@ -121,13 +134,13 @@ Before replacing an older server or migrating an older schema, setup requires a 
 
 ## Upgrade and uninstall
 
-Run a newer NSIS installer to upgrade. It replaces the application runtime in `%LOCALAPPDATA%\Programs\Passwatcher`, keeps a single exact user `PATH` entry, and never changes `%APPDATA%\Passwatcher\config.toml`.
+Run a newer NSIS installer to upgrade. It replaces the application runtime in `%LOCALAPPDATA%\Programs\Passwatcher`, keeps a single exact user `PATH` entry, and never changes `%APPDATA%\Passwatcher\config.toml` or `%LOCALAPPDATA%\Passwatcher\vault.db`.
 
-Uninstall from Windows Settings > Apps or run `%LOCALAPPDATA%\Programs\Passwatcher\uninstall.exe`. The uninstaller removes the application directory, registration, and exact Passwatcher `PATH` entry. It then asks whether to remove local Passwatcher connection settings. Choose No to keep them for a later reinstall. Silent uninstall retains configuration by default. Uninstalling the Windows client never deletes or changes the Linux vault.
+Uninstall from Windows Settings > Apps or run `%LOCALAPPDATA%\Programs\Passwatcher\uninstall.exe`. The uninstaller removes the application directory, registration, and exact Passwatcher `PATH` entry. It asks separately whether to remove connection settings and whether to remove the local DPAPI vault and its backups; both default to No. Silent uninstall retains both. Uninstalling the Windows client never deletes or changes the Linux vault.
 
 ## Troubleshooting
 
-Start with `pw doctor`. It checks the local configuration, `ssh`/`scp`, connectivity, protocol and schema compatibility, Linux permissions, SQLite integrity, and read access without modifying the vault.
+Start with `pw doctor`. In local mode it checks Windows, the local path, SQLite integrity, DPAPI decryptability, record count, and backups. In remote mode it checks configuration, `ssh`/`scp`, connectivity, protocol/schema compatibility, Linux permissions, SQLite integrity, and read access. Diagnostics do not repair a vault.
 
 - If `pw` is not recognized just after install, close the terminal and open a new one.
 - If configuration is missing or invalid, run `pw setup` again.
@@ -137,9 +150,17 @@ Start with `pw doctor`. It checks the local configuration, `ssh`/`scp`, connecti
 
 ## Security model
 
-Passwatcher is for one person using a Linux server and account they own and control. Credential records are plaintext inside a permissions-protected SQLite database on that server. There is no server-side encryption. Anyone who can read the database as that Linux user (including a sufficiently privileged administrator or a compromised account) can read every credential.
+### Local mode
 
-SSH encrypts credentials in transit. Secrets are sent in JSON on SSH standard input, never in shell command arguments. Windows stores only SSH connection settings unless you deliberately create a plaintext CSV export; it does not cache vault records. Use a dedicated, strongly protected Linux account, SSH keys with appropriate filesystem permissions, trusted endpoint devices, and server backups appropriate for plaintext secrets. If you do not accept plaintext storage on an owned server, do not use Passwatcher.
+Every credential field is stored inside a current-user Windows DPAPI blob. Passwatcher does not use machine scope and does not store a master password or application encryption key. Normally, the same Windows user on the same device is required to decrypt the data, and DPAPI authenticates blobs against tampering.
+
+DPAPI does not protect passwords from malware or another process already running as the same logged-on user. It is not a replacement for a strong Windows password, Windows Hello, BitLocker/device encryption, endpoint security, or backups. Some domain/roaming-profile environments can change portability, and an administrator resetting rather than changing a Windows password can make older DPAPI data unrecoverable. Do not assume that copying `vault.db` to another device creates a usable backup; keep a deliberately secured offline recovery export if your risk model requires one.
+
+### Remote mode
+
+Credential records are plaintext inside a permissions-protected SQLite database on the Linux server. There is no server-side encryption. Anyone who can read the database as that Linux user, including a sufficiently privileged administrator or a compromised account, can read every credential.
+
+SSH encrypts credentials in transit. Secrets are sent in JSON on SSH standard input, never in shell command arguments. Use a dedicated, strongly protected Linux account, secure SSH keys, trusted endpoint devices, and appropriate server backups. Switching from local to remote necessarily decrypts records inside Passwatcher before sending them through SSH; values are never placed in command arguments or logs.
 
 ## Build a Windows release
 

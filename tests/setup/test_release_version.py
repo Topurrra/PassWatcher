@@ -51,14 +51,14 @@ def test_release_version_rejects_invalid_or_mismatched_versions(
 def test_release_version_cli_prints_only_verified_version() -> None:
     """Catches the workflow-facing command emitting unusable output."""
     completed = subprocess.run(
-        [sys.executable, "tools/verify_release_version.py", "v0.1.0"],
+        [sys.executable, "tools/verify_release_version.py", "v0.2.0"],
         capture_output=True,
         text=True,
         check=False,
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == "0.1.0\n"
+    assert completed.stdout == "0.2.0\n"
     assert completed.stderr == ""
 
 

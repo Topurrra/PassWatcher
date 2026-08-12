@@ -38,7 +38,7 @@ Set-Location PassWatcher
 To build an existing release, check out its tag first—for example:
 
 ```powershell
-git checkout v0.1.0
+git checkout v0.2.0
 ```
 
 ## 3. Create the build environment
@@ -60,13 +60,13 @@ Alternatively, leave the policy unchanged and replace `python` in later commands
 
 ## 4. Verify the source version
 
-The Git release tag, `pyproject.toml`, and `src\passwatcher\__init__.py` must contain the same version. For a `v0.1.0` release:
+The Git release tag, `pyproject.toml`, and `src\passwatcher\__init__.py` must contain the same version. For a `v0.2.0` release:
 
 ```powershell
-python tools/verify_release_version.py v0.1.0
+python tools/verify_release_version.py v0.2.0
 ```
 
-The command must print only `0.1.0`. When preparing a new release, update both source declarations, commit them, and use the matching `v<version>` tag.
+The command must print only `0.2.0`. When preparing a new release, update both source declarations, commit them, and use the matching `v<version>` tag.
 
 ## 5. Build and test the installer
 
@@ -95,7 +95,7 @@ Inspect the output and calculate the public installer checksum:
 
 ```powershell
 Get-ChildItem dist
-Get-FileHash -Algorithm SHA256 dist\Passwatcher-Setup-0.1.0.exe
+Get-FileHash -Algorithm SHA256 dist\Passwatcher-Setup-0.2.0.exe
 ```
 
 Publish the versioned installer, not only `pw.exe`: the executable depends on its collected runtime files until NSIS packages them. During installation, NSIS also creates the `passwatcher.exe` command alias from `pw.exe`.
