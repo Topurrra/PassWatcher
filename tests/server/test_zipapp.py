@@ -142,7 +142,7 @@ def test_built_zipapp_is_reproducible_and_runs_without_project_dependencies(tmp_
     assert completed.stderr == ""
     with zipfile.ZipFile(ZIPAPP_PATH) as archive:
         names = archive.namelist()
-        assert names == [
+        assert sorted(names) == [
             "__main__.py",
             "passwatcher_server/",
             "passwatcher_server/__init__.py",

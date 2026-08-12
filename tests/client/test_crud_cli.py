@@ -192,7 +192,9 @@ def test_generate_displays_and_copies_one_password(cli, clipboard):
 
 def test_global_plain_option_precedes_generate_help(cli):
     """Catches root flags causing command help to be parsed as a lookup query."""
-    result = cli.invoke(app, ["--plain", "generate", "--help"])
+    result = cli.invoke(
+        app, ["--plain", "generate", "--help"], env={"NO_COLOR": "1"}
+    )
 
     assert result.exit_code == 0
     assert "--length" in result.stdout

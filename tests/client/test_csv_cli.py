@@ -249,8 +249,8 @@ def test_export_service_error_creates_no_destination(
 
 def test_csv_help_shows_short_and_long_flags(cli: CliRunner, service: FakeService) -> None:
     """Catches approved concise aliases disappearing from command help."""
-    imported = cli.invoke(app, ["import", "--help"])
-    exported = cli.invoke(app, ["export", "--help"])
+    imported = cli.invoke(app, ["import", "--help"], env={"NO_COLOR": "1"})
+    exported = cli.invoke(app, ["export", "--help"], env={"NO_COLOR": "1"})
 
     assert imported.exit_code == exported.exit_code == 0
     assert "-n" in imported.stdout and "--dry-run" in imported.stdout
