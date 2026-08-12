@@ -1,4 +1,7 @@
 from pathlib import Path
+import json
+import shutil
+import subprocess
 import tomllib
 
 import passwatcher
@@ -35,9 +38,11 @@ def test_pyinstaller_contract_includes_runtime_and_server_bundle() -> None:
 
 def test_nsis_has_idempotent_path_and_registered_uninstaller_contract() -> None:
     text = Path("packaging/passwatcher.nsi").read_text(encoding="utf-8")
-    assert "Function AddToUserPath" in text
-    assert "Function un.RemoveFromUserPath" in text
-    assert "IfErrors remove_path_done" in text
+    assert "update_user_path.ps1" in text
+    assert "nsExec::ExecToLog" in text
+    assert "ReadRegStr" not in text
+    assert "WriteRegExpandStr" not in text
+    assert "DeleteRegValue HKCU \"Environment\" \"Path\"" not in text
     assert "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Passwatcher" in text
     assert 'MessageBox MB_YESNO|MB_ICONQUESTION "Remove local Passwatcher connection settings too?" /SD IDNO' in text
 
@@ -65,3 +70,85 @@ def test_smoke_script_requires_disposable_context_and_refuses_existing_config() 
     assert text.count("Invoke-CheckedProcess -FilePath $installerPath") >= 2
     assert "pw --help" in text
     assert "uninstall.exe" in text
+    assert "$installed" not in text
+    assert "Test-Path -LiteralPath $uninstaller -PathType Leaf" in text
+    assert "Test-Path -LiteralPath $installDirectory" in text
+    assert "Restore-OriginalUserPath" in text
+
+
+def _run_path_transform(operation: str, state: str, value: str, entry: str, restore_absent=False):
+    shell = shutil.which("powershell") or shutil.which("pwsh")
+    if shell is None:
+        return None
+    command = [
+        shell,
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        "packaging/update_user_path.ps1",
+        "-Operation",
+        operation,
+        "-Entry",
+        entry,
+        "-TransformState",
+        state,
+        "-TransformValue",
+        value,
+        "-TransformRestoreAbsent",
+        str(restore_absent).lower(),
+    ]
+    result = subprocess.run(command, check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)
+
+
+def test_path_helper_uses_length_safe_registry_api() -> None:
+    text = Path("packaging/update_user_path.ps1").read_text(encoding="utf-8")
+    assert "[Microsoft.Win32.Registry]::CurrentUser" in text
+    assert "DoNotExpandEnvironmentNames" in text
+    assert "GetValueNames" in text
+    assert "StringSplitOptions]::None" in text
+    assert "OrdinalIgnoreCase" in text
+    assert "GetEnvironmentVariable" not in text
+    assert "SetEnvironmentVariable" not in text
+
+
+def test_path_transform_preserves_long_values_duplicates_and_unrelated_order() -> None:
+    entry = r"C:\Users\tester\AppData\Local\Programs\Passwatcher"
+    unrelated = [f"C:\\tools\\segment-{index:04d}" for index in range(700)]
+    original = ";".join(unrelated) + ";;"
+    added = _run_path_transform("Add", "Present", original, entry)
+    if added is None:
+        return
+    assert added == {"exists": True, "value": original + ";" + entry, "changed": True}
+
+    with_duplicates = added["value"] + ";" + entry.upper() + ";tail;;"
+    removed = _run_path_transform("Remove", "Present", with_duplicates, entry)
+    assert removed == {"exists": True, "value": original + ";tail;;", "changed": True}
+
+
+def test_path_transform_distinguishes_absent_empty_and_trailing_empty_segments() -> None:
+    entry = r"C:\Passwatcher"
+    absent_add = _run_path_transform("Add", "Absent", "", entry)
+    empty_add = _run_path_transform("Add", "Present", "", entry)
+    trailing_add = _run_path_transform("Add", "Present", "alpha;;", entry)
+    if absent_add is None:
+        return
+
+    assert absent_add["value"] == entry
+    assert empty_add["value"] == ";" + entry
+    assert trailing_add["value"] == "alpha;;;" + entry
+    assert _run_path_transform("Remove", "Present", absent_add["value"], entry, True) == {
+        "exists": False,
+        "value": None,
+        "changed": True,
+    }
+    assert _run_path_transform("Remove", "Present", empty_add["value"], entry) == {
+        "exists": True,
+        "value": "",
+        "changed": True,
+    }
+    assert _run_path_transform("Remove", "Present", trailing_add["value"], entry) == {
+        "exists": True,
+        "value": "alpha;;",
+        "changed": True,
+    }

@@ -12,6 +12,7 @@ SetCompressor /SOLID lzma
 !define PRODUCT_NAME "Passwatcher"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Passwatcher"
 !define BUILD_DIR "${__FILEDIR__}\..\dist\passwatcher"
+!define PATH_HELPER "${__FILEDIR__}\update_user_path.ps1"
 
 Name "${PRODUCT_NAME} ${VERSION}"
 OutFile "${__FILEDIR__}\..\dist\Passwatcher-Setup-${VERSION}.exe"
@@ -23,100 +24,30 @@ Function BroadcastEnvironmentChange
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 FunctionEnd
 
-; Add $INSTDIR only when it is not already a complete, case-insensitive PATH segment.
+; PowerShell/.NET registry APIs avoid NSIS's fixed-size string registers, so long
+; user PATH values are never truncated while exact case-insensitive segments are updated.
 Function AddToUserPath
-  ClearErrors
-  ReadRegStr $0 HKCU "Environment" "Path"
-  IfErrors add_path_empty
-  StrCpy $1 0
-  StrCpy $2 ""
-
-add_path_scan:
-  StrCpy $3 $0 1 $1
-  StrCmp $3 "" add_path_last_segment
-  StrCmp $3 ";" add_path_segment
-  StrCpy $2 "$2$3"
-  IntOp $1 $1 + 1
-  Goto add_path_scan
-
-add_path_segment:
-  StrCmp $2 "$INSTDIR" add_path_done
-  StrCpy $2 ""
-  IntOp $1 $1 + 1
-  Goto add_path_scan
-
-add_path_last_segment:
-  StrCmp $2 "$INSTDIR" add_path_done
-  StrCmp $0 "" add_path_empty
-  StrLen $1 $0
-  IntOp $1 $1 - 1
-  StrCpy $2 $0 1 $1
-  StrCmp $2 ";" add_path_after_separator
-  StrCpy $0 "$0;$INSTDIR"
-  Goto add_path_write
-
-add_path_after_separator:
-  StrCpy $0 "$0$INSTDIR"
-  Goto add_path_write
-
-add_path_empty:
-  StrCpy $0 "$INSTDIR"
-
-add_path_write:
-  WriteRegExpandStr HKCU "Environment" "Path" $0
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\update_user_path.ps1 "${PATH_HELPER}"
+  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\update_user_path.ps1" -Operation Add -Entry "$INSTDIR"'
+  Pop $0
+  StrCmp $0 "0" add_path_success
+  DetailPrint "Unable to update the current-user PATH (exit code $0)."
+  Abort
+add_path_success:
   Call BroadcastEnvironmentChange
-
-add_path_done:
 FunctionEnd
 
-; Rebuild PATH while removing every segment exactly equal to $INSTDIR.
-; All other segments, including empty segments, retain their order.
 Function un.RemoveFromUserPath
-  ClearErrors
-  ReadRegStr $0 HKCU "Environment" "Path"
-  IfErrors remove_path_done
-  StrCpy $1 0
-  StrCpy $2 ""
-  StrCpy $4 ""
-  StrCpy $5 0
-
-remove_path_scan:
-  StrCpy $3 $0 1 $1
-  StrCmp $3 "" remove_path_last_segment
-  StrCmp $3 ";" remove_path_segment
-  StrCpy $2 "$2$3"
-  IntOp $1 $1 + 1
-  Goto remove_path_scan
-
-remove_path_segment:
-  StrCmp $2 "$INSTDIR" remove_path_next
-  StrCmp $5 1 0 remove_path_first
-  StrCpy $4 "$4;"
-remove_path_first:
-  StrCpy $4 "$4$2"
-  StrCpy $5 1
-remove_path_next:
-  StrCpy $2 ""
-  IntOp $1 $1 + 1
-  Goto remove_path_scan
-
-remove_path_last_segment:
-  StrCmp $2 "$INSTDIR" remove_path_write
-  StrCmp $5 1 0 remove_path_last_first
-  StrCpy $4 "$4;"
-remove_path_last_first:
-  StrCpy $4 "$4$2"
-  StrCpy $5 1
-
-remove_path_write:
-  StrCmp $5 1 0 remove_path_delete_value
-  WriteRegExpandStr HKCU "Environment" "Path" $4
-  Goto remove_path_broadcast
-remove_path_delete_value:
-  DeleteRegValue HKCU "Environment" "Path"
-remove_path_broadcast:
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\update_user_path.ps1 "${PATH_HELPER}"
+  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\update_user_path.ps1" -Operation Remove -Entry "$INSTDIR"'
+  Pop $0
+  StrCmp $0 "0" remove_path_success
+  DetailPrint "Unable to remove Passwatcher from the current-user PATH (exit code $0)."
+  Abort
+remove_path_success:
   Call un.BroadcastEnvironmentChange
-remove_path_done:
 FunctionEnd
 
 Function un.BroadcastEnvironmentChange

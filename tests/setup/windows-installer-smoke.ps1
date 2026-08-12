@@ -22,10 +22,8 @@ $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalA
 $configDirectory = Join-Path $appData "Passwatcher"
 $installDirectory = Join-Path $localAppData "Programs\Passwatcher"
 $uninstaller = Join-Path $installDirectory "uninstall.exe"
-$originalUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 $sentinel = "passwatcher-smoke-$([Guid]::NewGuid().ToString('N'))"
 $createdConfig = $false
-$installed = $false
 
 if (Test-Path -LiteralPath $configDirectory) {
     throw "Refusing to use an existing Passwatcher config directory: $configDirectory"
@@ -46,12 +44,72 @@ function Invoke-CheckedProcess {
     }
 }
 
+function Get-UserPathState {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $false)
+    try {
+        if ($null -eq $key) {
+            return [PSCustomObject]@{ Exists = $false; Value = $null; Kind = $null }
+        }
+        $exists = $false
+        foreach ($valueName in $key.GetValueNames()) {
+            if ([string]::Equals($valueName, "Path", [StringComparison]::OrdinalIgnoreCase)) {
+                $exists = $true
+                break
+            }
+        }
+        if (-not $exists) {
+            return [PSCustomObject]@{ Exists = $false; Value = $null; Kind = $null }
+        }
+        $value = $key.GetValue(
+            "Path",
+            $null,
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        )
+        return [PSCustomObject]@{
+            Exists = $true
+            Value = [string]$value
+            Kind = $key.GetValueKind("Path")
+        }
+    }
+    finally {
+        if ($null -ne $key) {
+            $key.Dispose()
+        }
+    }
+}
+
+function Test-UserPathMatches {
+    param([Parameter(Mandatory)]$Expected)
+
+    $actual = Get-UserPathState
+    return (
+        $actual.Exists -eq $Expected.Exists -and
+        $actual.Value -ceq $Expected.Value -and
+        $actual.Kind -eq $Expected.Kind
+    )
+}
+
+function Restore-OriginalUserPath {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment", $true)
+    try {
+        if ($originalUserPath.Exists) {
+            $key.SetValue("Path", $originalUserPath.Value, $originalUserPath.Kind)
+        }
+        else {
+            $key.DeleteValue("Path", $false)
+        }
+    }
+    finally {
+        $key.Dispose()
+    }
+}
+
 function Get-InstallPathEntryCount {
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ([string]::IsNullOrEmpty($userPath)) {
+    $state = Get-UserPathState
+    if (-not $state.Exists) {
         return 0
     }
-    return @($userPath.Split(';') | Where-Object { $_ -ieq $installDirectory }).Count
+    return @($state.Value.Split(';') | Where-Object { $_ -ieq $installDirectory }).Count
 }
 
 function Assert-PwRunsFromUserPath {
@@ -66,9 +124,10 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     Invoke-CheckedProcess -FilePath powershell.exe -ArgumentList @("-NoProfile", "-NonInteractive", "-EncodedCommand", $encoded)
 }
 
+$originalUserPath = Get-UserPathState
+
 try {
     Invoke-CheckedProcess -FilePath $installerPath -ArgumentList @("/S")
-    $installed = $true
     if (-not (Test-Path -LiteralPath (Join-Path $installDirectory "pw.exe") -PathType Leaf)) {
         throw "The installer did not create pw.exe."
     }
@@ -91,7 +150,6 @@ try {
     }
 
     Invoke-CheckedProcess -FilePath $uninstaller -ArgumentList @("/S")
-    $installed = $false
     for ($attempt = 0; $attempt -lt 50 -and (Test-Path -LiteralPath $installDirectory); $attempt++) {
         Start-Sleep -Milliseconds 100
     }
@@ -101,8 +159,7 @@ try {
     if ((Get-InstallPathEntryCount) -ne 0) {
         throw "Uninstall left the Passwatcher user PATH entry behind."
     }
-    $currentUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($currentUserPath -cne $originalUserPath) {
+    if (-not (Test-UserPathMatches -Expected $originalUserPath)) {
         throw "Install/uninstall changed unrelated user PATH content."
     }
     if (-not (Test-Path -LiteralPath (Join-Path $configDirectory "config.toml") -PathType Leaf)) {
@@ -112,8 +169,19 @@ try {
     Write-Host "Passwatcher installer smoke test passed."
 }
 finally {
-    if ($installed -and (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
-        Start-Process -FilePath $uninstaller -ArgumentList @("/S") -Wait | Out-Null
+    if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
+        try {
+            Start-Process -FilePath $uninstaller -ArgumentList @("/S") -Wait | Out-Null
+        }
+        catch {
+            Write-Warning "Partial-install uninstaller cleanup failed: $($_.Exception.Message)"
+        }
+    }
+    if (Test-Path -LiteralPath $installDirectory) {
+        Remove-Item -LiteralPath $installDirectory -Recurse -Force
+    }
+    if (-not (Test-UserPathMatches -Expected $originalUserPath)) {
+        Restore-OriginalUserPath
     }
     if ($createdConfig -and (Test-Path -LiteralPath $configDirectory)) {
         Remove-Item -LiteralPath $configDirectory -Recurse -Force
